@@ -4,21 +4,13 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth"; // Import the auth service
 
 const firebaseConfig = {
-
-  apiKey: "AIzaSyBWdHpHec7m_Xcyq8YISscZdcYkoRmIUEw",
-
-  authDomain: "custom-fantasy-b220a.firebaseapp.com",
-
-  projectId: "custom-fantasy-b220a",
-
-  storageBucket: "custom-fantasy-b220a.firebasestorage.app",
-
-  messagingSenderId: "273947739453",
-
-  appId: "1:273947739453:web:c7169327a7d6cc6fc8f154",
-
-  measurementId: "G-B4ZZR77G9P"
-
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 // Initialize Firebase

@@ -1,34 +1,67 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase.js';
-import { collection, query, onSnapshot, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, query, onSnapshot, orderBy, getDocs, writeBatch } from "firebase/firestore";
 
-function OverallLeaderboard() {
+function OverallLeaderboard({ leagueId }) {
   const [players, setPlayers] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
-    const usersRef = collection(db, "users");
-    // Query the users collection and order by totalScore in descending order
-    const q = query(usersRef, orderBy("totalScore", "desc"));
+    const fetchLeaderboard = async () => {
+        setIsLoading(true);
+        try {
+            // 1. Fetch League Members if viewing a league
+            let leagueMembers = null;
+            if (leagueId) {
+                const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
+                if (leagueDoc.exists()) {
+                    leagueMembers = leagueDoc.data().members || [];
+                } else {
+                    console.error("League not found");
+                }
+            }
 
-    // Use onSnapshot for real-time updates
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const playersList = [];
-      querySnapshot.forEach((doc) => {
-        playersList.push({
-          id: doc.id,
-          name: doc.data().displayName,
-          points: doc.data().totalScore || 0
-        });
-      });
-      setPlayers(playersList);
-      setIsLoading(false);
+            // 2. Subscribe to Users
+            const usersRef = collection(db, "users");
+            const q = query(usersRef, orderBy("totalScore", "desc"));
+            
+            const unsubscribe = onSnapshot(q, (querySnapshot) => {
+              const playersList = [];
+              querySnapshot.forEach((doc) => {
+                // FILTER LOGIC
+                if (leagueMembers && !leagueMembers.includes(doc.id)) {
+                    return;
+                }
+
+                playersList.push({
+                  id: doc.id,
+                  name: doc.data().displayName,
+                  points: doc.data().totalScore || 0
+                });
+              });
+              setPlayers(playersList);
+              setIsLoading(false);
+            });
+            return unsubscribe; // Return the function to clean up
+        } catch (e) {
+            console.error(e);
+            setIsLoading(false);
+        }
+    };
+
+    // We need to manage the unsubscribe manually since we made the effect async
+    let unsubscribeFunc = null;
+    fetchLeaderboard().then(unsub => {
+        if (typeof unsub === 'function') unsubscribeFunc = unsub;
     });
 
-    // Clean up the listener when the component unmounts
-    return () => unsubscribe();
-  }, []);
+    return () => {
+        if (unsubscribeFunc) unsubscribeFunc();
+    };
 
+  }, [leagueId]);
+  
   if (isLoading) {
     return <div className="loading-container"><h3>Loading Overall Leaderboard...</h3></div>;
   }
@@ -63,3 +96,4 @@ function OverallLeaderboard() {
 }
 
 export default OverallLeaderboard;
+
