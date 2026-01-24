@@ -12,6 +12,7 @@ import LeaguesView from './LeaguesView.jsx';
 import H2HLeaderboard from './H2HLeaderboard.jsx';
 import { checkForAutoUpdate, tryTriggerLiveUpdate } from './utils/dataUpdater.js';
 import { getMatchGradient, getTeamColor } from './utils/teamColors.js';
+import TeamForm from './TeamForm.jsx';
 
 // ...
 
@@ -35,6 +36,7 @@ function App() {
   const [isCheckingProfile, setIsCheckingProfile] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [currentLeague, setCurrentLeague] = useState(null);
+  const [teamForms, setTeamForms] = useState({});
 
   const showToast = (message, type = 'info') => {
     setToast({ message, visible: true, type });
@@ -164,6 +166,21 @@ function App() {
     };
     fetchPredictions();
   }, [gameWeekId, user]);
+
+  // Fetch Forms - RELIGIOUSLY LISTEN
+  useEffect(() => {
+    const docRef = doc(db, "system", "standings");
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+            console.log("Forms loaded:", Object.keys(docSnap.data().forms || {}).length);
+            setTeamForms(docSnap.data().forms || {});
+        } else {
+            console.log("No standings data found.");
+        }
+    }, (err) => console.error("Error listening to standings:", err));
+
+    return () => unsubscribe();
+  }, []);
 
   // H2H Opponent Logic
   const [h2hOpponent, setH2hOpponent] = useState(null);
@@ -390,7 +407,10 @@ function App() {
                   {/* HOME TEAM: Logo -> Name -> Input */}
                   <div className="team-container home">
                     <img src={match.homeLogo} alt={match.homeTeam} className="team-logo" />
-                    <span className="team-name">{match.homeTeam}</span>
+                    <div style={{display:'flex', flexDirection:'column', alignItems:'flex-end', marginRight:'10px'}}>
+                        <span className="team-name">{match.homeTeam}</span>
+                        <TeamForm formString={teamForms[match.homeTeam]} />
+                    </div>
                     <input 
                       type="number" 
                       min="0" 
@@ -415,8 +435,11 @@ function App() {
                       onBlur={() => handleSavePredictions()}
                       disabled={isLocked}
                     />
+                    <div style={{display:'flex', flexDirection:'column', alignItems:'flex-start', marginLeft:'10px'}}>
+                        <span className="team-name">{match.awayTeam}</span>
+                        <TeamForm formString={teamForms[match.awayTeam]} />
+                    </div>
                     <img src={match.awayLogo} alt={match.awayTeam} className="team-logo" />
-                    <span className="team-name">{match.awayTeam}</span>
                   </div>
                 </div>
                 {/* Real Score Display */}
@@ -449,6 +472,38 @@ function App() {
 
       {activeView === 'gameweek' && (
           <>
+            {/* Contextual Navigation for Leaderboard */}
+            <div style={{
+                display: 'flex', 
+                justifyContent: 'center', 
+                alignItems: 'center', 
+                gap: '1rem', 
+                marginBottom: '1rem',
+                backgroundColor: '#2a2a2a',
+                padding: '10px',
+                borderRadius: '8px'
+            }}>
+                <button 
+                  onClick={() => setCurrentRound(String(Math.max(1, parseInt(currentRound) - 1)))}
+                  className="nav-button"
+                  disabled={parseInt(currentRound) <= 1}
+                  style={{fontSize: '1.2rem', padding: '5px 15px'}}
+                >
+                  &lt;
+                </button>
+                <div style={{fontWeight: 'bold', fontSize: '1.1rem'}}>
+                    Gameweek {currentRound}
+                </div>
+                <button 
+                  onClick={() => setCurrentRound(String(parseInt(currentRound) + 1))}
+                  className="nav-button"
+                  style={{fontSize: '1.2rem', padding: '5px 15px'}}
+                >
+                  &gt;
+                </button>
+            </div>
+
+
             {currentLeague?.type === 'h2h' && (
                 <H2HLeaderboard league={currentLeague} currentRound={currentRound} />
             )}

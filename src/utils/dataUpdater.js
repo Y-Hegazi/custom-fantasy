@@ -66,6 +66,37 @@ export const processMatchUpdate = async (setStatusCallback) => {
     const systemRef = doc(db, "system", "status");
     await setDoc(systemRef, { currentRound: String(nextMatchday), lastUpdated: new Date().toISOString() });
 
+    // --- NEW: Fetch Standings (for Form) ---
+    setStatusCallback('Fetching Standings (Team Form)...');
+    try {
+        const standingsResponse = await fetch(`${API_BASE_URL}/competitions/${COMPETITION_CODE}/standings?season=${SEASON}`, { headers });
+        const standingsData = await standingsResponse.json();
+        
+        if (standingsData.standings) {
+            const formMap = {};
+            const totalTable = standingsData.standings.find(s => s.type === 'TOTAL');
+            if (totalTable && totalTable.table) {
+                totalTable.table.forEach(entry => {
+                    // entry.form is usually "W,L,D,W,W" (comma separate?)
+                    // The API actually returns "W,L,D,W,W" as a string usually, but let's check format 
+                    // commonly it's comma separated, but sometimes just "WLDWW"
+                    formMap[entry.team.name] = entry.form; 
+                });
+                
+                const standingsRef = doc(db, "system", "standings");
+                await setDoc(standingsRef, { 
+                    forms: formMap, 
+                    lastUpdated: new Date().toISOString() 
+                });
+                console.log("Standings (Form) updated.");
+            }
+        }
+    } catch (err) {
+        console.error("Failed to update standings:", err);
+        // Don't fail the whole process if just standings fail
+        setStatusCallback(`Warning: Standings update failed (${err.message})`);
+    }
+
     setStatusCallback(`Success! Detected Current Gameweek: ${nextMatchday}`);
     return nextMatchday;
 };

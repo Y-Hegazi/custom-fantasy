@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase.js';
 import { collection, query, getDocs, doc, runTransaction, getDoc } from "firebase/firestore";
+import PlayerPredictionsModal from './PlayerPredictionsModal';
 
 const API_BASE_URL = "/api";
 const COMPETITION_CODE = "PL";
@@ -21,6 +22,10 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
   const [error, setError] = useState('');
   const [isFinalized, setIsFinalized] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  
+  // Modal State
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+  const [matchesData, setMatchesData] = useState([]);
 
   useEffect(() => {
     const calculateAllScores = async () => {
@@ -71,6 +76,8 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
         
         if (cacheSnap.exists()) {
              const cachedMatches = cacheSnap.data().matches || [];
+             setMatchesData(cachedMatches); // Store full match data for modal
+
              cachedMatches.forEach(match => {
                  if (match.status === 'FINISHED' && match.score.fullTime.home !== null) {
                      matchResults[String(match.id)] = {
@@ -82,6 +89,7 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
         } else {
             console.warn(`No cached data for Leaderboard Week ${currentRound}`);
             setError('Waiting for Admin to update match data...');
+            setMatchesData([]);
         }
 
         // --- 3. FETCH & CALCULATE PREDICTIONS ---
@@ -208,7 +216,13 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
               <tr key={player.id}>
                 <td>{index + 1}</td>
                 <td>
-                  {player.name}
+                  <span 
+                    onClick={() => setSelectedPlayer(player)}
+                    style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffd166' }}
+                    title="View Picks"
+                  >
+                      {player.name}
+                  </span>
                   <div style={{fontSize: '0.75rem', color: '#aaa'}}>{player.details}</div>
                 </td>
                 <td>{player.points}</td>
@@ -217,6 +231,16 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
           </tbody>
         </table>
       ) : ( !error && <p>No one has made predictions yet.</p> )}
+      
+      {/* Predictions Modal */}
+      <PlayerPredictionsModal 
+          isOpen={!!selectedPlayer}
+          onClose={() => setSelectedPlayer(null)}
+          targetPlayerId={selectedPlayer?.id}
+          targetPlayerName={selectedPlayer?.name}
+          gameWeekId={gameWeekId}
+          matches={matchesData}
+      />
     </div>
   );
 }

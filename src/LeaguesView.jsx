@@ -234,6 +234,71 @@ function LeaguesView({ user, onSelectLeague }) {
       }
   };
 
+  const handleRegenerateFixtures = async (league) => {
+      const input = prompt("Enter the Gameweek to start the new schedule from (e.g. 4):");
+      if (!input) return;
+      const startGw = parseInt(input);
+      if (isNaN(startGw) || startGw < 1 || startGw > 38) {
+          alert("Invalid Gameweek");
+          return;
+      }
+
+      if (!confirm(`Regenerate fixtures from Gameweek ${startGw} onwards? This will overwrite future matchups for the current ${league.members.length} members.`)) return;
+
+      setLoading(true);
+      try {
+          // 1. Generate NEW base schedule for current members
+          const members = league.members;
+           // Round Robin Logic (Duplicated from generateFixtures to ensure consistent local scope usage)
+          const teamList = [...members];
+          if (teamList.length % 2 !== 0) {
+              teamList.push("AVERAGE");
+          }
+          const numTeams = teamList.length;
+          const rounds = numTeams - 1;
+          const half = numTeams / 2;
+          
+          const baseSchedule = [];
+          
+          let currentTeams = [...teamList];
+          for (let r = 0; r < rounds; r++) {
+              const roundMatches = [];
+              for (let i = 0; i < half; i++) {
+                  const home = currentTeams[i];
+                  const away = currentTeams[numTeams - 1 - i];
+                  roundMatches.push({ player1: home, player2: away, score1: null, score2: null });
+              }
+              baseSchedule.push(roundMatches);
+              currentTeams.splice(1, 0, currentTeams.pop());
+          }
+
+          // 2. Merge with existing fixtures
+          const updatedFixtures = { ...league.fixtures };
+          
+          for (let gw = startGw; gw <= 38; gw++) {
+              // We start the NEW cycle at startGw
+              // So gw=startGw corresponds to index 0 of baseSchedule
+              const cycleIndex = (gw - startGw) % rounds;
+              updatedFixtures[gw] = baseSchedule[cycleIndex];
+          }
+
+          // 3. Save
+          const leagueRef = doc(db, "leagues", league.id);
+          await updateDoc(leagueRef, {
+              fixtures: updatedFixtures
+          });
+
+          await fetchMyLeagues();
+          alert(`Fixtures updated from GW ${startGw}!`);
+
+      } catch (e) {
+          console.error(e);
+          setError("Failed to regenerate fixtures.");
+      } finally {
+          setLoading(false);
+      }
+  };
+
   const handleDeleteLeague = async (leagueId, leagueName) => {
       if (!window.confirm(`Are you sure you want to delete "${leagueName}"? This cannot be undone.`)) {
           return;
@@ -336,6 +401,28 @@ function LeaguesView({ user, onSelectLeague }) {
                                     }}
                                   >
                                       ▶️ Start Season
+                                  </button>
+                              )}
+
+                              {league.adminId === user.uid && league.status === 'active' && league.type === 'h2h' && (
+                                  <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRegenerateFixtures(league);
+                                    }}
+                                    style={{
+                                        width: '100%',
+                                        marginTop: '10px',
+                                        backgroundColor: '#e9c46a',
+                                        color: '#333',
+                                        border: 'none',
+                                        padding: '5px',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        fontWeight: 'bold'
+                                    }}
+                                  >
+                                      🔄 Regenerate Fixtures
                                   </button>
                               )}
                           </div>
