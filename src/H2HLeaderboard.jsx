@@ -50,37 +50,87 @@ function H2HLeaderboard({ league, currentRound }) {
                     roundsToProcess.push(r);
                 }
 
-                // We need to fetch SCORES for these rounds
-                // Optimization: Fetch all needed gameweeks in parallel
-                const gwPromises = roundsToProcess.map(r => getDoc(doc(db, "gameweeks", `gameweek_${r}`)));
-                const gwSnaps = await Promise.all(gwPromises);
+                // Helper function to calculate points (same as leaderboard.jsx)
+                const getMatchOutcome = (homeScore, awayScore) => {
+                    if (homeScore > awayScore) return 'H';
+                    if (awayScore > homeScore) return 'A'; 
+                    return 'D';
+                };
+                const POINTS_EXACT_SCORE = 3;
+                const POINTS_CORRECT_RESULT = 1;
 
-                for (let i = 0; i < gwSnaps.length; i++) {
-                    const gwSnap = gwSnaps[i];
-                    const roundNum = roundsToProcess[i];
+                // Process each round
+                for (const roundNum of roundsToProcess) {
+                    const gwSnap = await getDoc(doc(db, "gameweeks", `gameweek_${roundNum}`));
                     
-                    if (!gwSnap.exists() || !gwSnap.data().isFinalized) continue; // Skip unfinalized
+                    // Skip if gameweek not finalized - matches might not be complete
+                    if (!gwSnap.exists() || !gwSnap.data().isFinalized) {
+                        console.log(`[H2H] Round ${roundNum} not finalized, skipping`);
+                        continue;
+                    }
 
-                    // Fetch individual scores for this week
-                    // We need the 'predictions' subcollection effectively
-                    const predsSnap = await getDocs(collection(db, "gameweeks", gwSnap.id, "predictions"));
+                    // 1. Fetch MATCH RESULTS from cache
+                    const cacheSnap = await getDoc(doc(db, "matches_cache", `week_${roundNum}`));
+                    if (!cacheSnap.exists()) {
+                        console.log(`[H2H] No match cache for round ${roundNum}`);
+                        continue;
+                    }
+
+                    const matchResults = {};
+                    const cachedMatches = cacheSnap.data().matches || [];
+                    cachedMatches.forEach(match => {
+                        if (match.status === 'FINISHED' && match.score?.fullTime?.home !== null) {
+                            matchResults[String(match.id)] = {
+                                home: match.score.fullTime.home,
+                                away: match.score.fullTime.away
+                            };
+                        }
+                    });
+
+                    // 2. Fetch PREDICTIONS and CALCULATE SCORES on-the-fly
+                    const predsSnap = await getDocs(collection(db, "gameweeks", `gameweek_${roundNum}`, "predictions"));
                     const roundScores = {};
                     let totalScore = 0;
                     let count = 0;
 
-                    predsSnap.forEach(doc => {
-                        const pts = doc.data().points || 0;
-                        roundScores[doc.id] = pts;
-                        // For Average Calc (exclude AVERAGE bot obviously)
-                        if (league.members.includes(doc.id)) {
-                             totalScore += pts;
-                             count++;
+                    predsSnap.forEach(predDoc => {
+                        const playerData = predDoc.data();
+                        let playerPoints = 0;
+
+                        // Calculate points for this player using their predictions
+                        for (const matchId in playerData.scores) {
+                            const prediction = playerData.scores[matchId];
+                            const result = matchResults[matchId];
+                            
+                            if (prediction && result) {
+                                const predHome = parseInt(prediction.home, 10);
+                                const predAway = parseInt(prediction.away, 10);
+                                
+                                // Exact score match
+                                if (predHome === result.home && predAway === result.away) {
+                                    playerPoints += POINTS_EXACT_SCORE;
+                                } 
+                                // Correct result (W/D/L)
+                                else if (getMatchOutcome(predHome, predAway) === getMatchOutcome(result.home, result.away)) {
+                                    playerPoints += POINTS_CORRECT_RESULT;
+                                }
+                            }
+                        }
+
+                        roundScores[predDoc.id] = playerPoints;
+                        
+                        // Track for average calculation (only league members)
+                        if (league.members.includes(predDoc.id)) {
+                            totalScore += playerPoints;
+                            count++;
                         }
                     });
 
-                    // Calculate Average
+                    // Calculate Average for ghost player
                     const avgScore = count > 0 ? Math.round(totalScore / count) : 0;
                     roundScores["AVERAGE"] = avgScore;
+
+                    console.log(`[H2H] Round ${roundNum} scores:`, roundScores);
 
                     // 3. Process Matchups for this Round
                     const matchups = league.fixtures[String(roundNum)] || [];
@@ -89,7 +139,7 @@ function H2HLeaderboard({ league, currentRound }) {
                         const p1 = match.player1;
                         const p2 = match.player2;
                         
-                        const score1 = roundScores[p1] !== undefined ? roundScores[p1] : 0; // Default 0 if no play
+                        const score1 = roundScores[p1] !== undefined ? roundScores[p1] : 0;
                         const score2 = roundScores[p2] !== undefined ? roundScores[p2] : 0;
 
                         // Update P1

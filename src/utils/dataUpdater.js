@@ -42,6 +42,34 @@ export const processMatchUpdate = async (setStatusCallback) => {
     });
 
     setStatusCallback('Saving to Firestore (matches_cache)...');
+    
+    // Fetch any manual score overrides to preserve them
+    setStatusCallback('Checking for manual score overrides...');
+    const overrideRef = doc(db, "system", "score_overrides");
+    const overrideSnap = await getDoc(overrideRef);
+    const overrides = overrideSnap.exists() ? (overrideSnap.data().overrides || {}) : {};
+    
+    // Apply overrides to matches before saving
+    Object.keys(matchesByGameweek).forEach(gw => {
+        matchesByGameweek[gw] = matchesByGameweek[gw].map(match => {
+            const overrideKey = `${gw}_${match.id}`;
+            if (overrides[overrideKey]) {
+                console.log(`[Override] Applying manual score for match ${match.id}: ${overrides[overrideKey].home}-${overrides[overrideKey].away}`);
+                return {
+                    ...match,
+                    score: {
+                        fullTime: {
+                            home: overrides[overrideKey].home,
+                            away: overrides[overrideKey].away
+                        }
+                    },
+                    hasManualOverride: true
+                };
+            }
+            return match;
+        });
+    });
+    
     const batch = writeBatch(db);
     
     Object.keys(matchesByGameweek).forEach(gw => {
@@ -191,8 +219,31 @@ export const tryTriggerLiveUpdate = async (gameweekId) => {
              }
         })).sort((a, b) => a.timestamp - b.timestamp);
 
+        // Apply any manual score overrides
+        const overrideRef = doc(db, "system", "score_overrides");
+        const overrideSnap = await getDoc(overrideRef);
+        const overrides = overrideSnap.exists() ? (overrideSnap.data().overrides || {}) : {};
+        
+        const finalMatches = matches.map(match => {
+            const overrideKey = `${gameweekId}_${match.id}`;
+            if (overrides[overrideKey]) {
+                console.log(`[Live Override] Applying manual score for match ${match.id}: ${overrides[overrideKey].home}-${overrides[overrideKey].away}`);
+                return {
+                    ...match,
+                    score: {
+                        fullTime: {
+                            home: overrides[overrideKey].home,
+                            away: overrides[overrideKey].away
+                        }
+                    },
+                    hasManualOverride: true
+                };
+            }
+            return match;
+        });
+
         // 3. Write real data to Firestore
-        await setDoc(docRef, { matches: matches, lastUpdated: new Date().toISOString() });
+        await setDoc(docRef, { matches: finalMatches, lastUpdated: new Date().toISOString() });
         console.log(`[Live Update] Success. Firestore updated for GW ${gameweekId}.`);
 
     } catch (e) {

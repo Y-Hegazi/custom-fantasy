@@ -73,14 +73,17 @@ function App() {
   }, [currentRound]);
 
   // LIVE TRIGGER: Crowd-Sourced Cron
+  // Now triggers for whichever gameweek is being VIEWED, not just the "current" one
+  // This ensures past gameweeks get score corrections (e.g., disallowed goals)
   useEffect(() => {
       if (!currentRound) return;
+      
+      // Trigger immediately when viewing any gameweek to get latest scores
+      tryTriggerLiveUpdate(currentRound);
       
       const interval = setInterval(() => {
           tryTriggerLiveUpdate(currentRound);
       }, 60000);
-
-      tryTriggerLiveUpdate(currentRound);
 
       return () => clearInterval(interval);
   }, [currentRound]);
