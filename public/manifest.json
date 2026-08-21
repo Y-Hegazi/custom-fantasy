@@ -1,11 +1,18 @@
 {
   "short_name": "PredictionFantasy",
-  "name": "PredictionFantasy - Premier League Predictions",
+  "name": "PredictionFantasy - Premier League Predictions & Leagues",
+  "description": "The modern Premier League prediction platform with live betting odds multipliers, mini-leagues, and real-time leaderboards.",
   "icons": [
     {
       "src": "/favicon.ico",
       "sizes": "64x64 32x32 24x24 16x16",
       "type": "image/x-icon"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
   ],
   "start_url": "/",
@@ -13,5 +20,22 @@
   "theme_color": "#1e3a8a",
   "display": "standalone",
   "orientation": "portrait",
-  "scope": "/"
+  "scope": "/",
+  "categories": ["sports", "games", "entertainment"],
+  "shortcuts": [
+    {
+      "name": "My Leagues",
+      "short_name": "Leagues",
+      "description": "View private and public mini-leagues",
+      "url": "/leagues",
+      "icons": [{ "src": "/vite.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "Leaderboards",
+      "short_name": "Standings",
+      "description": "View overall season leaderboard",
+      "url": "/leaderboard",
+      "icons": [{ "src": "/vite.svg", "sizes": "192x192" }]
+    }
+  ]
 }

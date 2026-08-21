@@ -1,99 +1,138 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { doc, getDoc, collection, query, onSnapshot, orderBy, getDocs, writeBatch } from "firebase/firestore";
+import { supabase } from './supabase';
 
-function OverallLeaderboard({ leagueId }) {
-  const [players, setPlayers] = useState([]);
+interface OverallLeaderboardProps {
+  leagueId?: string | null;
+}
+
+function OverallLeaderboard({ leagueId }: OverallLeaderboardProps) {
+  const [players, setPlayers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
-        setIsLoading(true);
-        try {
-            // 1. Fetch League Members if viewing a league
-            let leagueMembers = null;
-            if (leagueId) {
-                const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
-                if (leagueDoc.exists()) {
-                    leagueMembers = leagueDoc.data().members || [];
-                } else {
-                    console.error("League not found");
-                }
-            }
+      setIsLoading(true);
+      try {
+        let allowedUserIds: string[] | null = null;
 
-            // 2. Subscribe to Users
-            const usersRef = collection(db, "users");
-            const q = query(usersRef, orderBy("totalScore", "desc"));
-            
-            const unsubscribe = onSnapshot(q, (querySnapshot) => {
-              const playersList = [];
-              querySnapshot.forEach((doc) => {
-                // FILTER LOGIC
-                if (leagueMembers && !leagueMembers.includes(doc.id)) {
-                    return;
-                }
-
-                playersList.push({
-                  id: doc.id,
-                  name: doc.data().displayName,
-                  points: doc.data().totalScore || 0
-                });
-              });
-              setPlayers(playersList);
-              setIsLoading(false);
-            });
-            return unsubscribe; // Return the function to clean up
-        } catch (e) {
-            console.error(e);
+        if (leagueId) {
+          const { data: members } = await supabase
+            .from('league_members')
+            .select('user_id')
+            .eq('league_id', leagueId);
+          
+          if (members && members.length > 0) {
+            allowedUserIds = members.map(m => m.user_id);
+          } else {
+            setPlayers([]);
             setIsLoading(false);
+            return;
+          }
         }
+
+        let query = supabase
+          .from('profiles')
+          .select('id, display_name, total_score, avatar_url')
+          .order('total_score', { ascending: false });
+
+        if (allowedUserIds && allowedUserIds.length > 0) {
+          query = query.in('id', allowedUserIds);
+        }
+
+        const { data: profiles, error } = await query;
+        if (error) throw error;
+
+        const list = (profiles || []).map(p => ({
+          id: p.id,
+          name: p.display_name || 'Manager',
+          points: p.total_score || 0,
+          avatar: p.avatar_url,
+        }));
+
+        setPlayers(list);
+      } catch (err) {
+        console.error("Error loading overall leaderboard:", err);
+      } finally {
+        setIsLoading(false);
+      }
     };
 
-    // We need to manage the unsubscribe manually since we made the effect async
-    let unsubscribeFunc = null;
-    fetchLeaderboard().then(unsub => {
-        if (typeof unsub === 'function') unsubscribeFunc = unsub;
-    });
+    fetchLeaderboard();
+
+    // Subscribe to realtime profile score changes
+    const channel = supabase
+      .channel('public:profiles')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+        fetchLeaderboard();
+      })
+      .subscribe();
 
     return () => {
-        if (unsubscribeFunc) unsubscribeFunc();
+      supabase.removeChannel(channel);
     };
-
   }, [leagueId]);
-  
-  if (isLoading) {
-    return <div className="loading-container"><h3>Loading Overall Leaderboard...</h3></div>;
-  }
 
   return (
-    <div className="leaderboard-container">
-      <h3>Overall Season Leaderboard</h3>
-      {players.length > 0 ? (
-        <table className="leaderboard-table">
-          <thead>
-            <tr>
-              <th>Rank</th>
-              <th>Player</th>
-              <th>Total Points</th>
-            </tr>
-          </thead>
-          <tbody>
-            {players.map((player, index) => (
-              <tr key={player.id}>
-                <td>{index + 1}</td>
-                <td>{player.name}</td>
-                <td>{player.points}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="leaderboard-card">
+      <div className="leaderboard-header">
+        <h2>Overall Season Standings 🏆</h2>
+        <span className="live-pill">LIVE SYNC</span>
+      </div>
+
+      {isLoading ? (
+        <div className="leaderboard-loading">
+          <div className="spinner"></div>
+          <p>Loading table standings...</p>
+        </div>
+      ) : players.length === 0 ? (
+        <div className="leaderboard-empty">
+          <p>No manager scores recorded yet. Submit predictions to join the race!</p>
+        </div>
       ) : (
-        <p>No players have scored points yet.</p>
+        <div className="table-responsive">
+          <table className="leaderboard-table">
+            <thead>
+              <tr>
+                <th style={{ width: '60px' }}>Rank</th>
+                <th>Manager</th>
+                <th style={{ textAlign: 'right', width: '100px' }}>Total Pts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {players.map((player, index) => {
+                let rankBadge = `${index + 1}`;
+                let rankClass = '';
+                if (index === 0) {
+                  rankBadge = '🥇 1';
+                  rankClass = 'rank-gold';
+                } else if (index === 1) {
+                  rankBadge = '🥈 2';
+                  rankClass = 'rank-silver';
+                } else if (index === 2) {
+                  rankBadge = '🥉 3';
+                  rankClass = 'rank-bronze';
+                }
+
+                return (
+                  <tr key={player.id} className={rankClass}>
+                    <td className="rank-cell font-mono font-bold">{rankBadge}</td>
+                    <td className="manager-cell">
+                      <div className="manager-info">
+                        <span className="font-semibold text-white">{player.name}</span>
+                      </div>
+                    </td>
+                    <td className="points-cell text-right font-extrabold text-blue-400">
+                      {player.points}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
 
 export default OverallLeaderboard;
-

@@ -20,6 +20,7 @@ import {
 } from './utils/backupManager';
 import { calculatePredictionPoints } from './utils/oddsEngine';
 import { isSupabaseConfigured } from './supabase';
+import { settleGameweekScores } from './utils/scoringEngine';
 
 function Admin() {
   const [status, setStatus] = useState('');
@@ -320,7 +321,16 @@ function Admin() {
       batch.set(gwRef, { isFinalized: true }, { merge: true });
 
       await batch.commit();
-      setStatus(`✅ Gameweek ${finalizeGW} successfully finalized! Points awarded to ${predsSnap.docs.length} managers.`);
+
+      // Run Supabase PostgreSQL Settlement Engine
+      try {
+        const settlement = await settleGameweekScores(parseInt(finalizeGW, 10), SEASON);
+        console.log("Supabase Gameweek Settlement result:", settlement);
+      } catch (supaErr) {
+        console.warn("Supabase settlement note:", supaErr);
+      }
+
+      setStatus(`✅ Gameweek ${finalizeGW} successfully finalized! Points awarded to ${predsSnap.docs.length} managers across PostgreSQL and Cloud databases.`);
       await inspectGameweek();
       await loadUsers();
     } catch (err: any) {

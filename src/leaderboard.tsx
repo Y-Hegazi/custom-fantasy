@@ -1,32 +1,28 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { collection, query, getDocs, doc, runTransaction, getDoc } from "firebase/firestore";
+import { supabase } from './supabase';
 import PlayerPredictionsModal from './PlayerPredictionsModal';
-import { calculatePredictionPoints } from './utils/oddsEngine';
+import { calculatePredictionPoints, generateMatchOdds } from './utils/oddsEngine';
 
-const POINTS_EXACT_SCORE = 3;
-const POINTS_CORRECT_RESULT = 1;
+interface GameweekLeaderboardProps {
+  gameWeekId?: string | null;
+  currentRound?: string | number | null;
+  season?: string;
+  leagueId?: string | null;
+}
 
-const getMatchOutcome = (homeScore, awayScore) => {
-  if (homeScore > awayScore) return 'H';
-  if (awayScore > homeScore) return 'A'; 
-  return 'D';
-};
-
-function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
-  const [players, setPlayers] = useState([]);
+function GameweekLeaderboard({ gameWeekId, currentRound, season = '2026', leagueId }: GameweekLeaderboardProps) {
+  const [players, setPlayers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [isFinalized, setIsFinalized] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   
   // Modal State
-  const [selectedPlayer, setSelectedPlayer] = useState(null);
-  const [matchesData, setMatchesData] = useState([]);
+  const [selectedPlayer, setSelectedPlayer] = useState<any | null>(null);
+  const [matchesData, setMatchesData] = useState<any[]>([]);
 
   useEffect(() => {
     const calculateAllScores = async () => {
-      if (!gameWeekId || !currentRound || !season) {
+      if (!currentRound) {
         setIsLoading(false);
         return;
       }
@@ -35,174 +31,119 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
       setError('');
       setStatusMessage('');
       
-
-      
       try {
-        // --- 1. FETCH LEAGUE MEMBERS (If Private League) ---
-        let leagueMembers = null; // null means 'Global'
+        const gwNum = Number(currentRound);
+
+        // 1. Fetch League Members if viewing private league
+        let allowedUserIds: string[] | null = null;
         if (leagueId) {
-            const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
-            if (leagueDoc.exists()) {
-                leagueMembers = leagueDoc.data().members || [];
-            } else {
-                setError("League not found.");
-                setIsLoading(false);
-                return;
-            }
-        }
-
-        // --- 2. FETCH MATCH OUTCOMES ---
-        const gameweekRef = doc(db, "gameweeks", gameWeekId);
-        const gameweekSnap = await getDoc(gameweekRef);
-        // ... (existing finalized check)
-        if (gameweekSnap.exists() && gameweekSnap.data().isFinalized) {
-          setIsFinalized(true);
-        } else {
-          setIsFinalized(false);
-        }
-
-        const cacheRef = doc(db, "matches_cache", `${season}_week_${currentRound}`);
-        const cacheSnap = await getDoc(cacheRef);
-        
-        const matchResults = {};
-        
-        if (cacheSnap.exists()) {
-             const cachedMatches = cacheSnap.data().matches || [];
-             setMatchesData(cachedMatches); // Store full match data for modal
-
-             cachedMatches.forEach(match => {
-                 if (match.status === 'FINISHED' && match.score.fullTime.home !== null) {
-                     matchResults[String(match.id)] = {
-                         home: match.score.fullTime.home,
-                         away: match.score.fullTime.away,
-                         odds: match.odds
-                     };
-                 }
-             });
-        } else {
-            console.warn(`No cached data for Leaderboard Week ${currentRound}`);
-            setError('Waiting for Admin to update match data...');
-            setMatchesData([]);
-        }
-
-        // --- 3. FETCH & CALCULATE PREDICTIONS ---
-        const playersList = [];
-        const predictionsRef = collection(db, "gameweeks", gameWeekId, "predictions");
-        
-        // Fetch all valid users first to filter out deleted ones
-        const usersSnap = await getDocs(collection(db, "users"));
-        const validUserIds = new Set(usersSnap.docs.map(u => u.id));
-
-        const predictionsSnapshot = await getDocs(query(predictionsRef));
-
-        predictionsSnapshot.forEach((doc) => {
-          // FILTER: If Private League, skip non-members
-          if (leagueMembers && !leagueMembers.includes(doc.id)) return;
+          const { data: members } = await supabase
+            .from('league_members')
+            .select('user_id')
+            .eq('league_id', leagueId);
           
-          // FILTER: Skip deleted users (orphaned predictions)
-          if (!validUserIds.has(doc.id)) return; 
-
-          const playerData = doc.data();
-          let totalPoints = 0;
-          let exactCount = 0;
-          let correctResultCount = 0;
-          let bonusCount = 0;
-
-          for (const matchId in playerData.scores) {
-            const prediction = playerData.scores[matchId];
-            const result = matchResults[matchId];
-            if (prediction && result) {
-              const res = calculatePredictionPoints(
-                prediction.home,
-                prediction.away,
-                result.home,
-                result.away,
-                result.odds
-              );
-              totalPoints += res.totalPoints;
-              if (res.isExact) exactCount++;
-              if (res.isOutcome && !res.isExact) correctResultCount++;
-              if (res.multiplier > 1) bonusCount++;
-            }
+          if (members) {
+            allowedUserIds = members.map(m => m.user_id);
           }
-          playersList.push({ 
-            id: doc.id, 
-            name: playerData.userName || 'Anonymous', 
-            points: totalPoints,
-            details: `(${exactCount} Exact, ${correctResultCount} Outcome${bonusCount > 0 ? `, ⚡${bonusCount} Bonus` : ''})` 
-          });
+        }
+
+        // 2. Fetch Match Cache for this gameweek
+        const { data: cacheRow } = await supabase
+          .from('matches_cache')
+          .select('matches')
+          .eq('id', `${season}_week_${gwNum}`)
+          .single();
+
+        const cachedMatches = cacheRow?.matches || [];
+        setMatchesData(cachedMatches);
+
+        const matchResults: Record<string, { home: number; away: number; odds?: any }> = {};
+        cachedMatches.forEach((match: any) => {
+          if (match.status === 'FINISHED' && match.score?.fullTime?.home !== null && match.score?.fullTime?.away !== null) {
+            matchResults[String(match.id)] = {
+              home: Number(match.score.fullTime.home),
+              away: Number(match.score.fullTime.away),
+              odds: match.odds || generateMatchOdds(match.homeTeam?.name || '', match.awayTeam?.name || '', String(match.id))
+            };
+          }
         });
+
+        // 3. Fetch Predictions for this gameweek
+        let predQuery = supabase
+          .from('predictions')
+          .select('id, user_id, match_id, home_score, away_score, points')
+          .eq('season', season)
+          .eq('gameweek', gwNum);
+
+        if (allowedUserIds && allowedUserIds.length > 0) {
+          predQuery = predQuery.in('user_id', allowedUserIds);
+        }
+
+        const { data: predictions, error: pErr } = await predQuery;
+        if (pErr) console.warn("Supabase predictions query:", pErr);
+
+        // 4. Fetch Profiles for display names
+        const { data: profiles } = await supabase.from('profiles').select('id, display_name');
+        const nameMap: Record<string, string> = {};
+        (profiles || []).forEach(p => {
+          nameMap[p.id] = p.display_name || 'Manager';
+        });
+
+        // 5. Group by user and calculate gameweek score
+        const userScores: Record<string, { totalPoints: number; exact: number; outcome: number; bonus: number }> = {};
         
+        (predictions || []).forEach(pred => {
+          const uid = pred.user_id;
+          if (!userScores[uid]) {
+            userScores[uid] = { totalPoints: 0, exact: 0, outcome: 0, bonus: 0 };
+          }
+
+          const result = matchResults[String(pred.match_id)];
+          if (result && pred.home_score !== null && pred.away_score !== null) {
+            const res = calculatePredictionPoints(
+              pred.home_score,
+              pred.away_score,
+              result.home,
+              result.away,
+              result.odds
+            );
+            userScores[uid].totalPoints += res.totalPoints;
+            if (res.isExact) userScores[uid].exact++;
+            if (res.isOutcome && !res.isExact) userScores[uid].outcome++;
+            if (res.multiplier > 1) userScores[uid].bonus++;
+          }
+        });
+
+        const playersList = Object.entries(userScores).map(([uid, stats]) => ({
+          id: uid,
+          name: nameMap[uid] || 'Manager',
+          points: stats.totalPoints,
+          details: `(${stats.exact} Exact, ${stats.outcome} Outcome${stats.bonus > 0 ? `, ⚡${stats.bonus} Bonus` : ''})`
+        }));
+
         playersList.sort((a, b) => b.points - a.points);
         setPlayers(playersList);
 
-   // --- 4. AUTO-FINALIZE LOGIC ---
-        const cachedMatches = cacheSnap.exists() ? (cacheSnap.data().matches || []) : [];
-        const allMatchesFinished = cachedMatches.length > 0 && cachedMatches.every(m => m.status === 'FINISHED');
-
-        // Check if we should auto-finalize
-        if (!gameweekSnap.data()?.isFinalized && allMatchesFinished && cachedMatches.length > 0 && playersList.length > 0) {
-            console.log("Auto-finalizing gameweek...");
-            // ... (keep existing auto-finalize logic) ...
-             try {
-                await runTransaction(db, async (transaction) => {
-                    const gwRefCheck = doc(db, "gameweeks", gameWeekId);
-                    const gwDoc = await transaction.get(gwRefCheck);
-                    
-                    if (gwDoc.exists() && gwDoc.data().isFinalized) return; 
-
-                    const userRefs = playersList.map(p => doc(db, "users", p.id));
-                    const userDocs = await Promise.all(userRefs.map(ref => transaction.get(ref)));
-
-                    userDocs.forEach((userDoc, index) => {
-                        const player = playersList[index];
-                        if (userDoc.exists()) {
-                            // 1. Update Global Total Score
-                            const currentTotal = userDoc.data().totalScore || 0;
-                            const newTotalScore = currentTotal + player.points;
-                            transaction.update(userDoc.ref, { totalScore: newTotalScore });
-
-                            // 2. Persist Gameweek Score (Critical for H2H)
-                            // We need to write to: gameweeks/{gwId}/predictions/{uid}
-                            // Note: We already read from this collection to build playersList, 
-                            // so we know the doc exists (player.id is the doc key).
-                            const predRef = doc(db, "gameweeks", gameWeekId, "predictions", player.id);
-                            transaction.update(predRef, { points: player.points });
-                        }
-                    });
-                    
-                    transaction.set(gwRefCheck, { isFinalized: true }, { merge: true });
-                });
-                
-                setIsFinalized(true);
-                setStatusMessage('✅ System Auto-Finalized scores for this week.');
-            } catch (err) {
-                console.error("Auto-finalize failed:", err);
-            }
-        }
-
-      } catch (err) {
-        console.error(err);
+      } catch (err: any) {
+        console.error("Leaderboard calculation error:", err);
         setError("Could not load leaderboard data.");
       } finally {
         setIsLoading(false);
       }
     };
+
     calculateAllScores();
   }, [gameWeekId, currentRound, season, leagueId]);
 
   if (isLoading) {
-    return <div className="loading-container"><h3>Calculating Scores...</h3></div>;
-  }
-  if (!gameWeekId) {
-    return <div className="leaderboard-container"><p>Waiting for gameweek to be determined...</p></div>;
+    return <div className="loading-container"><h3>Calculating Gameweek Scores...</h3></div>;
   }
 
   return (
     <div className="leaderboard-container">
-      <h3>Gameweek Leaderboard</h3>
+      <h3>Gameweek {currentRound || ''} Leaderboard</h3>
       {error && <p className="error-message">{error}</p>}
-      {statusMessage && <div className="status-message" style={{marginBottom:'1rem', padding:'10px', backgroundColor:'rgba(46, 204, 113, 0.2)', borderRadius:'6px'}}>{statusMessage}</div>}
+      {statusMessage && <div className="status-message">{statusMessage}</div>}
       
       {players.length > 0 ? (
         <table className="leaderboard-table">
@@ -221,12 +162,12 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
                   </span>
                   <div style={{fontSize: '0.75rem', color: '#aaa'}}>{player.details}</div>
                 </td>
-                <td>{player.points}</td>
+                <td className="font-bold text-blue-400">{player.points}</td>
               </tr>
             ))}
           </tbody>
         </table>
-      ) : ( !error && <p>No one has made predictions yet.</p> )}
+      ) : ( !error && <p>No predictions submitted for this gameweek yet.</p> )}
       
       {/* Predictions Modal */}
       <PlayerPredictionsModal 
@@ -242,4 +183,3 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
 }
 
 export default GameweekLeaderboard;
-
