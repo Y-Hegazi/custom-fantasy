@@ -19,11 +19,17 @@ import {
   autoSnapshotToFirestore 
 } from './utils/backupManager';
 import { calculatePredictionPoints } from './utils/oddsEngine';
+import { isSupabaseConfigured } from './supabase';
 
 function Admin() {
   const [status, setStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
+  // Telemetry & Infrastructure State
+  const [serverLatency, setServerLatency] = useState<number | null>(null);
+  const [serverHealthy, setServerHealthy] = useState<boolean>(true);
+  const [supabaseReady, setSupabaseReady] = useState<boolean>(false);
+
   // 1. Manual Score Correction State
   const [correctionGW, setCorrectionGW] = useState('1');
   const [correctionMatches, setCorrectionMatches] = useState<any[]>([]);
@@ -43,7 +49,11 @@ function Admin() {
   const [newDisplayName, setNewDisplayName] = useState('');
   const [scoreAdjustment, setScoreAdjustment] = useState('');
 
-  // 4. Gameweek Finalizer State
+  // 4. League Management State
+  const [leaguesList, setLeaguesList] = useState<any[]>([]);
+  const [leagueSearch, setLeagueSearch] = useState('');
+
+  // 5. Gameweek Finalizer State
   const [finalizeGW, setFinalizeGW] = useState('1');
   const [gwInspectData, setGwInspectData] = useState<{
     matches: any[];
@@ -53,11 +63,27 @@ function Admin() {
     topScorers: any[];
   } | null>(null);
 
-  // Load Announcement and Users on Mount
+  // Load Announcement, Users, Leagues & Telemetry on Mount
   useEffect(() => {
     loadAnnouncement();
     loadUsers();
+    loadLeagues();
+    checkTelemetry();
   }, []);
+
+  const checkTelemetry = async () => {
+    setSupabaseReady(isSupabaseConfigured());
+    const start = performance.now();
+    try {
+      const res = await fetch('/healthz');
+      const latency = Math.round(performance.now() - start);
+      setServerLatency(latency);
+      setServerHealthy(res.ok);
+    } catch {
+      setServerHealthy(false);
+      setServerLatency(null);
+    }
+  };
 
   // --- ANNOUNCEMENT HANDLERS ---
   const loadAnnouncement = async () => {
@@ -150,6 +176,32 @@ function Admin() {
       await loadUsers();
     } catch (err: any) {
       setStatus(`❌ Failed to delete user: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- LEAGUE MANAGEMENT HANDLERS ---
+  const loadLeagues = async () => {
+    try {
+      const snap = await getDocs(collection(db, "leagues"));
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setLeaguesList(list);
+    } catch (err: any) {
+      console.error("Error loading leagues:", err);
+    }
+  };
+
+  const handleDeleteLeague = async (leagueId: string, name: string) => {
+    if (!confirm(`⚠️ ARE YOU SURE you want to delete league "${name}"?\nAll member associations will be removed.`)) return;
+    setIsLoading(true);
+    setStatus(`Deleting league ${name}...`);
+    try {
+      await deleteDoc(doc(db, "leagues", leagueId));
+      setStatus(`✅ League "${name}" deleted.`);
+      await loadLeagues();
+    } catch (err: any) {
+      setStatus(`❌ Failed to delete league: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -453,12 +505,47 @@ function Admin() {
       
       {/* Header */}
       <div className="flex items-center justify-between pb-4 border-b border-gray-700 mb-6">
-        <h2 className="text-2xl font-bold flex items-center gap-2 text-white">
-          🛡️ Premier Admin Command Center
-        </h2>
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2 text-white">
+            🛡️ PredictionFantasy Control Center
+          </h2>
+          <p className="text-xs text-gray-400 mt-0.5">Admin operations, score audits, user moderation & telemetry</p>
+        </div>
         <span className="text-xs bg-blue-900/60 text-blue-300 px-3 py-1 rounded-full border border-blue-500/40 font-semibold">
           Season {SEASON} Active
         </span>
+      </div>
+
+      {/* --- TELEMETRY & SYSTEM HEALTH --- */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
+        <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
+          <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Container Health</span>
+          <div className="flex items-center gap-2 mt-1">
+            <span className={`w-2.5 h-2.5 rounded-full ${serverHealthy ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} />
+            <span className="text-sm font-bold text-white">{serverHealthy ? '200 OK' : 'Offline'}</span>
+          </div>
+          <span className="text-[10px] text-gray-500 mt-1">{serverLatency !== null ? `${serverLatency}ms latency` : 'Pinging...'}</span>
+        </div>
+
+        <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
+          <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Database Mode</span>
+          <div className="text-sm font-bold text-white mt-1">
+            {supabaseReady ? '⚡ Supabase PG' : '🔥 Firebase DB'}
+          </div>
+          <span className="text-[10px] text-gray-500 mt-1">{supabaseReady ? 'PostgreSQL Active' : 'Migration Ready'}</span>
+        </div>
+
+        <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
+          <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">API Cache Policy</span>
+          <div className="text-sm font-bold text-emerald-400 mt-1">10 req / min</div>
+          <span className="text-[10px] text-gray-500 mt-1">Zero Overage Rate Guard</span>
+        </div>
+
+        <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
+          <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Active Entities</span>
+          <div className="text-sm font-bold text-white mt-1">{usersList.length} Users · {leaguesList.length} Leagues</div>
+          <button onClick={() => { loadUsers(); loadLeagues(); checkTelemetry(); }} className="text-[10px] text-blue-400 hover:text-blue-300 text-left mt-1">🔄 Refresh telemetry</button>
+        </div>
       </div>
 
       {/* --- 1. 📢 GLOBAL BROADCAST ANNOUNCEMENT COMPOSER --- */}
@@ -707,6 +794,82 @@ function Admin() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* --- LEAGUE MANAGEMENT & MODERATION TABLE --- */}
+      <div className="mb-8 p-5 bg-[#1f2937] rounded-xl border border-gray-700/80 shadow-md">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-sky-400 flex items-center gap-2">
+              🏆 League Moderation & Roster ({leaguesList.length})
+            </h3>
+            <p className="text-xs text-gray-400">Inspect mini-leagues, copy join codes, or remove dead leagues.</p>
+          </div>
+          <input
+            type="text"
+            placeholder="Search by league name or join code..."
+            value={leagueSearch}
+            onChange={(e) => setLeagueSearch(e.target.value)}
+            className="p-2 rounded-lg bg-gray-900 border border-gray-700 text-xs text-white outline-none w-full sm:w-64"
+          />
+        </div>
+
+        <div className="overflow-x-auto max-h-72 overflow-y-auto rounded-lg border border-gray-700/60 bg-gray-900">
+          <table className="w-full text-left text-xs text-gray-300">
+            <thead className="bg-gray-800 text-gray-400 uppercase text-[10px] sticky top-0">
+              <tr>
+                <th className="p-3">League Name</th>
+                <th className="p-3">Join Code</th>
+                <th className="p-3">Type</th>
+                <th className="p-3 text-center">Members</th>
+                <th className="p-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {leaguesList
+                .filter(l => {
+                  const q = leagueSearch.toLowerCase();
+                  return (
+                    (l.name && l.name.toLowerCase().includes(q)) ||
+                    (l.code && l.code.toLowerCase().includes(q))
+                  );
+                })
+                .map(l => (
+                  <tr key={l.id} className="hover:bg-gray-800/50 transition">
+                    <td className="p-3 font-semibold text-white">
+                      {l.name}
+                    </td>
+                    <td className="p-3 font-mono font-bold text-amber-300">
+                      {l.code}
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${l.type === 'h2h' ? 'bg-purple-950 text-purple-300 border border-purple-600/40' : 'bg-blue-950 text-blue-300 border border-blue-600/40'}`}>
+                        {l.type === 'h2h' ? 'Head-to-Head' : 'Classic'}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center text-gray-300 font-bold">
+                      {Array.isArray(l.members) ? l.members.length : 1}
+                    </td>
+                    <td className="p-3 text-right">
+                      <button
+                        onClick={() => handleDeleteLeague(l.id, l.name)}
+                        className="px-2.5 py-1 bg-red-900/60 hover:bg-red-800 text-red-200 rounded text-[11px]"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              {leaguesList.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="p-4 text-center text-gray-500">
+                    No custom leagues found yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* --- 4. 🔄 DATA SYNC & MANUAL SCORE OVERRIDES --- */}

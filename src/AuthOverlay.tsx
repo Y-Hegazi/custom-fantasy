@@ -237,7 +237,7 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-600/20 text-blue-400 border border-blue-500/30 text-3xl mb-3 shadow-inner">
             ⚽
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Custom FPL Predictions</h1>
+          <h1 className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">PredictionFantasy</h1>
           <p className="text-sm text-gray-400 mt-1">
             {mode === 'login' && 'Sign in to manage predictions & leagues'}
             {mode === 'signup' && 'Create a new manager account'}

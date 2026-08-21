@@ -282,7 +282,8 @@ function App() {
   if ((isLoading && matches.length === 0) || isCheckingProfile) return (
     <div className="flex flex-col items-center w-full max-w-3xl mx-auto">
       <header className="w-full mb-8 border-b border-gray-700 pb-4">
-        <h1 className="text-3xl font-bold">Football Predictions</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">PredictionFantasy</h1>
+        <p className="text-xs text-gray-400 mt-1">Premier League Predictions & Custom Leagues</p>
         {isCheckingProfile ? <div className="skeleton-gw" style={{width: '200px'}}>Wait... Checking Profile</div> : <div className="skeleton-gw"></div>}
       </header>
       <div className="w-full flex flex-col gap-4">
@@ -571,7 +572,8 @@ function App() {
 
       {showOnboarding && <ProfileSetup user={user} onComplete={() => setShowOnboarding(false)} />}
       <header className="w-full mb-8 border-b border-gray-700 pb-4">
-        <h1 className="text-3xl font-bold mb-4">Football Predictions</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">PredictionFantasy</h1>
+        <p className="text-xs text-gray-400 mt-1 mb-4">Premier League Predictions & Custom Leagues</p>
         
         {currentRound && (
             <div className="flex items-center justify-center gap-4">
