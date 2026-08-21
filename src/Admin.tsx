@@ -1003,7 +1003,8 @@ function Admin() {
               setStatus('Resetting all profile scores in PostgreSQL...');
               const { error } = await supabase
                 .from('profiles')
-                .update({ total_score: 0 });
+                .update({ total_score: 0 })
+                .not('id', 'is', null);
 
               if (error) throw error;
 

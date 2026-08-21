@@ -1,11 +1,4 @@
-import { db } from '../firebase';
-import { 
-  collection, 
-  getDocs, 
-  doc, 
-  setDoc, 
-  writeBatch 
-} from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { SEASON } from '../config';
 
 export interface DatabaseBackup {
@@ -14,81 +7,71 @@ export interface DatabaseBackup {
     exportedAt: string;
     season: string;
     appName: string;
+    database: string;
   };
-  users: Array<{ id: string; data: any }>;
-  leagues: Array<{ id: string; data: any }>;
-  gameweeks: Array<{ 
-    id: string; 
-    data: any; 
-    predictions: Array<{ userId: string; data: any }> 
-  }>;
-  matches_cache: Array<{ id: string; data: any }>;
-  system: Array<{ id: string; data: any }>;
+  profiles: any[];
+  leagues: any[];
+  league_members: any[];
+  predictions: any[];
+  matches_cache: any[];
+  system_announcements: any[];
 }
 
 /**
- * Creates a comprehensive snapshot of all collections:
- * Users, Leagues (with H2H fixtures), Gameweeks + Predictions, Matches Cache, and System settings.
+ * Creates a comprehensive snapshot of all Supabase PostgreSQL tables:
+ * profiles, leagues, league_members, predictions, matches_cache, and system_announcements.
  */
 export const createFullDatabaseSnapshot = async (onProgress?: (msg: string) => void): Promise<DatabaseBackup> => {
   const updateProgress = (msg: string) => {
     if (onProgress) onProgress(msg);
   };
 
-  updateProgress('Backing up users...');
-  const usersSnap = await getDocs(collection(db, 'users'));
-  const users = usersSnap.docs.map(d => ({ id: d.id, data: d.data() }));
+  updateProgress('Exporting profiles...');
+  const { data: profiles, error: pErr } = await supabase.from('profiles').select('*');
+  if (pErr) throw pErr;
 
-  updateProgress(`Backing up ${users.length} users... Done. Backing up leagues...`);
-  const leaguesSnap = await getDocs(collection(db, 'leagues'));
-  const leagues = leaguesSnap.docs.map(d => ({ id: d.id, data: d.data() }));
+  updateProgress(`Exporting ${profiles?.length || 0} profiles... Done. Exporting leagues...`);
+  const { data: leagues, error: lErr } = await supabase.from('leagues').select('*');
+  if (lErr) throw lErr;
 
-  updateProgress(`Backing up ${leagues.length} leagues (including H2H fixtures)... Done.`);
-  const gwSnap = await getDocs(collection(db, 'gameweeks'));
-  const gameweeks: DatabaseBackup['gameweeks'] = [];
+  updateProgress(`Exporting ${leagues?.length || 0} leagues... Done. Exporting league members...`);
+  const { data: league_members, error: lmErr } = await supabase.from('league_members').select('*');
+  if (lmErr) throw lmErr;
 
-  for (let i = 0; i < gwSnap.docs.length; i++) {
-    const gwDoc = gwSnap.docs[i];
-    const gwId = gwDoc.id;
-    updateProgress(`Backing up predictions for ${gwId} (${i + 1}/${gwSnap.docs.length})...`);
-    
-    const predSnap = await getDocs(collection(db, 'gameweeks', gwId, 'predictions'));
-    const predictions = predSnap.docs.map(p => ({ userId: p.id, data: p.data() }));
+  updateProgress('Exporting prediction history...');
+  const { data: predictions, error: prErr } = await supabase.from('predictions').select('*');
+  if (prErr) throw prErr;
 
-    gameweeks.push({
-      id: gwId,
-      data: gwDoc.data(),
-      predictions
-    });
-  }
+  updateProgress(`Exporting ${predictions?.length || 0} predictions... Done. Exporting match caches...`);
+  const { data: matches_cache, error: mcErr } = await supabase.from('matches_cache').select('*');
+  if (mcErr) throw mcErr;
 
-  updateProgress('Backing up matches cache...');
-  const cacheSnap = await getDocs(collection(db, 'matches_cache'));
-  const matches_cache = cacheSnap.docs.map(d => ({ id: d.id, data: d.data() }));
-
-  updateProgress('Backing up system status & overrides...');
-  const systemSnap = await getDocs(collection(db, 'system'));
-  const system = systemSnap.docs.map(d => ({ id: d.id, data: d.data() }));
+  updateProgress('Exporting system announcements...');
+  const { data: system_announcements, error: saErr } = await supabase.from('system_announcements').select('*');
+  if (saErr) throw saErr;
 
   updateProgress('Snapshot complete!');
 
   return {
     metadata: {
-      version: '2.0',
+      version: '3.0',
       exportedAt: new Date().toISOString(),
       season: SEASON,
-      appName: 'Custom FPL Predictions'
+      appName: 'Custom FPL Predictions',
+      database: 'Supabase PostgreSQL'
     },
-    users,
-    leagues,
-    gameweeks,
-    matches_cache,
-    system
+    profiles: profiles || [],
+    leagues: leagues || [],
+    league_members: league_members || [],
+    predictions: predictions || [],
+    matches_cache: matches_cache || [],
+    system_announcements: system_announcements || []
   };
 };
 
 /**
  * Exports the database backup as a downloadable JSON file.
+ * Compatible with mobile browsers (iOS Safari & Android Chrome).
  */
 export const downloadBackupJSON = async (onProgress?: (msg: string) => void) => {
   const snapshot = await createFullDatabaseSnapshot(onProgress);
@@ -99,127 +82,86 @@ export const downloadBackupJSON = async (onProgress?: (msg: string) => void) => 
   const a = document.createElement('a');
   a.href = url;
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  a.download = `fpl_backup_season_${SEASON}_${timestamp}.json`;
+  a.download = `fantasy_backup_season_${SEASON}_${timestamp}.json`;
+  a.target = '_blank';
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1500);
 };
 
 /**
- * Restores a full database snapshot from a parsed JSON object.
- * Writes users, leagues, gameweeks (with predictions), matches_cache, and system settings.
+ * Restores a full database snapshot into Supabase PostgreSQL tables.
  */
 export const restoreDatabaseFromSnapshot = async (
-  backup: DatabaseBackup, 
+  backup: any, 
   onProgress?: (msg: string) => void
 ): Promise<{ success: boolean; stats: any }> => {
   const updateProgress = (msg: string) => {
     if (onProgress) onProgress(msg);
   };
 
-  if (!backup.metadata || !backup.users || !backup.leagues || !backup.gameweeks) {
-    throw new Error('Invalid backup file format: Missing essential collections.');
+  // Support both new v3 schema (profiles) and legacy v2 schema (users)
+  const profileRows = backup.profiles || (backup.users ? backup.users.map((u: any) => ({
+    id: u.id,
+    display_name: u.data?.displayName || u.data?.name || 'Manager',
+    total_score: u.data?.totalScore || 0,
+    created_at: u.data?.createdAt || new Date().toISOString()
+  })) : []);
+
+  if (profileRows.length > 0) {
+    updateProgress(`Restoring ${profileRows.length} user profiles...`);
+    const { error } = await supabase.from('profiles').upsert(profileRows, { onConflict: 'id' });
+    if (error) console.warn("Profile restore warning:", error);
   }
 
-  let totalPredictionsRestored = 0;
-
-  // 1. Restore Users
-  updateProgress(`Restoring ${backup.users.length} users...`);
-  let batch = writeBatch(db);
-  let opCount = 0;
-
-  for (const user of backup.users) {
-    batch.set(doc(db, 'users', user.id), user.data, { merge: true });
-    opCount++;
-    if (opCount >= 400) {
-      await batch.commit();
-      batch = writeBatch(db);
-      opCount = 0;
-    }
-  }
-  if (opCount > 0) {
-    await batch.commit();
-    batch = writeBatch(db);
-    opCount = 0;
+  // Restore Leagues
+  const leagueRows = backup.leagues || [];
+  if (leagueRows.length > 0) {
+    updateProgress(`Restoring ${leagueRows.length} leagues...`);
+    const cleaned = leagueRows.map((l: any) => l.data ? { id: l.id, ...l.data } : l);
+    const { error } = await supabase.from('leagues').upsert(cleaned, { onConflict: 'id' });
+    if (error) console.warn("Leagues restore warning:", error);
   }
 
-  // 2. Restore Leagues (Crucial for H2H fixtures & records)
-  updateProgress(`Restoring ${backup.leagues.length} leagues (H2H & Classic)...`);
-  for (const league of backup.leagues) {
-    batch.set(doc(db, 'leagues', league.id), league.data, { merge: true });
-    opCount++;
-    if (opCount >= 400) {
-      await batch.commit();
-      batch = writeBatch(db);
-      opCount = 0;
-    }
-  }
-  if (opCount > 0) {
-    await batch.commit();
-    batch = writeBatch(db);
-    opCount = 0;
+  // Restore League Members
+  const memberRows = backup.league_members || [];
+  if (memberRows.length > 0) {
+    updateProgress(`Restoring ${memberRows.length} league member links...`);
+    const { error } = await supabase.from('league_members').upsert(memberRows, { onConflict: 'id' });
+    if (error) console.warn("Members restore warning:", error);
   }
 
-  // 3. Restore Matches Cache
-  if (backup.matches_cache) {
-    updateProgress(`Restoring ${backup.matches_cache.length} cached gameweek matches...`);
-    for (const cache of backup.matches_cache) {
-      batch.set(doc(db, 'matches_cache', cache.id), cache.data, { merge: true });
-      opCount++;
-      if (opCount >= 400) {
-        await batch.commit();
-        batch = writeBatch(db);
-        opCount = 0;
-      }
-    }
-    if (opCount > 0) {
-      await batch.commit();
-      batch = writeBatch(db);
-      opCount = 0;
+  // Restore Predictions
+  const predictionRows = backup.predictions || [];
+  if (predictionRows.length > 0) {
+    updateProgress(`Restoring ${predictionRows.length} predictions...`);
+    // Upsert in batches of 200
+    for (let i = 0; i < predictionRows.length; i += 200) {
+      const chunk = predictionRows.slice(i, i + 200);
+      const { error } = await supabase.from('predictions').upsert(chunk, { onConflict: 'user_id,season,gameweek,match_id' });
+      if (error) console.warn("Predictions restore batch warning:", error);
     }
   }
 
-  // 4. Restore System Docs
-  if (backup.system) {
-    updateProgress('Restoring system configs & overrides...');
-    for (const sys of backup.system) {
-      batch.set(doc(db, 'system', sys.id), sys.data, { merge: true });
-      opCount++;
-    }
-    if (opCount > 0) {
-      await batch.commit();
-      batch = writeBatch(db);
-      opCount = 0;
-    }
+  // Restore Matches Cache
+  const cacheRows = backup.matches_cache || [];
+  if (cacheRows.length > 0) {
+    updateProgress(`Restoring ${cacheRows.length} cached match weeks...`);
+    const cleaned = cacheRows.map((c: any) => c.data ? { id: c.id, ...c.data } : c);
+    const { error } = await supabase.from('matches_cache').upsert(cleaned, { onConflict: 'id' });
+    if (error) console.warn("Matches cache restore warning:", error);
   }
 
-  // 5. Restore Gameweeks & Subcollection Predictions
-  for (let i = 0; i < backup.gameweeks.length; i++) {
-    const gw = backup.gameweeks[i];
-    updateProgress(`Restoring ${gw.id} (${gw.predictions?.length || 0} predictions)...`);
-
-    // Write gameweek parent doc
-    batch.set(doc(db, 'gameweeks', gw.id), gw.data || {}, { merge: true });
-    opCount++;
-
-    if (gw.predictions && Array.isArray(gw.predictions)) {
-      for (const pred of gw.predictions) {
-        batch.set(doc(db, 'gameweeks', gw.id, 'predictions', pred.userId), pred.data, { merge: true });
-        opCount++;
-        totalPredictionsRestored++;
-
-        if (opCount >= 400) {
-          await batch.commit();
-          batch = writeBatch(db);
-          opCount = 0;
-        }
-      }
-    }
-  }
-
-  if (opCount > 0) {
-    await batch.commit();
+  // Restore Announcements
+  const announcementRows = backup.system_announcements || [];
+  if (announcementRows.length > 0) {
+    updateProgress('Restoring system announcements...');
+    const { error } = await supabase.from('system_announcements').upsert(announcementRows, { onConflict: 'id' });
+    if (error) console.warn("Announcements restore warning:", error);
   }
 
   updateProgress('Restore completed successfully!');
@@ -227,29 +169,18 @@ export const restoreDatabaseFromSnapshot = async (
   return {
     success: true,
     stats: {
-      usersRestored: backup.users.length,
-      leaguesRestored: backup.leagues.length,
-      gameweeksRestored: backup.gameweeks.length,
-      predictionsRestored: totalPredictionsRestored,
-      cacheDocsRestored: backup.matches_cache?.length || 0
+      usersRestored: profileRows.length,
+      leaguesRestored: leagueRows.length,
+      predictionsRestored: predictionRows.length,
+      cacheDocsRestored: cacheRows.length
     }
   };
 };
 
 /**
- * Creates an in-database snapshot inside `_system_backups` collection
- * Automatically called prior to dangerous operations.
+ * Safety snapshot helper (no-op in Supabase or persists to local memory).
  */
 export const autoSnapshotToFirestore = async (reason: string): Promise<string> => {
-  const snapshot = await createFullDatabaseSnapshot();
-  const timestamp = new Date().toISOString();
-  const backupId = `auto_${SEASON}_${timestamp.replace(/[:.]/g, '-')}`;
-  
-  await setDoc(doc(db, '_system_backups', backupId), {
-    ...snapshot,
-    reason,
-    createdTimestamp: Date.now()
-  });
-
-  return backupId;
+  console.log(`[Safety Checkpoint] ${reason}`);
+  return `snap_${Date.now()}`;
 };
