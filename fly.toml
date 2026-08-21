@@ -4,6 +4,14 @@ primary_region = 'fra'
 
 [build]
   dockerfile = 'Dockerfile'
+  [build.args]
+    VITE_SUPABASE_URL = "https://spyohjlqeisqybqpjbyb.supabase.co"
+    VITE_SUPABASE_ANON_KEY = "sb_publishable_b3QUDgwI15MvcaLL9tsPfQ_zgc9KVXY"
+
+[env]
+  VITE_SUPABASE_URL = "https://spyohjlqeisqybqpjbyb.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "sb_publishable_b3QUDgwI15MvcaLL9tsPfQ_zgc9KVXY"
+  SEASON = "2026"
 
 [http_service]
   internal_port = 3000
