@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
 import { doc, getDoc } from "firebase/firestore";
+import { LOCKOUT_BUFFER_MS } from './config';
+import { calculatePredictionPoints } from './utils/oddsEngine';
 import './App.css'; // Re-use modal/overlay styles
 
 const getMatchOutcome = (homeScore, awayScore) => {
@@ -50,32 +52,35 @@ function PlayerPredictionsModal({ isOpen, onClose, targetPlayerId, targetPlayerN
                 ) : (
                     <div className="predictions-list">
                         {matches.map(match => {
-                            const isLocked = match.status === 'IN_PLAY' || match.status === 'PAUSED' || match.status === 'FINISHED';
+                            const isLocked = match.status === 'IN_PLAY' || match.status === 'PAUSED' || match.status === 'FINISHED' || Date.now() > (match.timestamp - LOCKOUT_BUFFER_MS);
                             const userPred = predictions[match.id];
                             
                             // Visual State
                             let statusColor = '#444'; // Default/Future
                             let resultText = '';
                             let points = 0;
+                            let badgesText = '';
 
                             if (match.status === 'IN_PLAY' || match.status === 'PAUSED') statusColor = '#e67e22'; // Orange (Live)
                             if (match.status === 'FINISHED') statusColor = '#27ae60'; // Green (Done)
 
-                            // Calculate Points for Display (only if finished/live for fun?) 
-                            // Real points usually calculated on finish, but we can simulate display here
-                            if (isLocked && userPred && match.score.fullTime.home !== null) {
-                                const realHome = match.score.fullTime.home;
-                                const realAway = match.score.fullTime.away;
-                                const predHome = parseInt(userPred.home);
-                                const predAway = parseInt(userPred.away);
+                            // Calculate Points using the engine (respects all multipliers)
 
-                                if (realHome === predHome && realAway === predAway) {
-                                    resultText = '🎯 Exact (3pts)';
-                                    points = 3;
-                                    statusColor = '#f1c40f'; // Gold
-                                } else if (getMatchOutcome(realHome, realAway) === getMatchOutcome(predHome, predAway)) {
-                                    resultText = '✅ Correct Result (1pt)';
-                                    points = 1;
+                            if (isLocked && userPred && match.score.fullTime.home !== null) {
+                                const scoreResult = calculatePredictionPoints(
+                                    userPred.home,
+                                    userPred.away,
+                                    match.score.fullTime.home,
+                                    match.score.fullTime.away,
+                                    match.odds
+                                );
+                                points = scoreResult.totalPoints;
+                                badgesText = scoreResult.badges.join(' ');
+
+                                if (scoreResult.isExact) {
+                                    resultText = `🎯 Exact (${points}pts)`;
+                                } else if (scoreResult.isOutcome) {
+                                    resultText = `✅ Result (${points}pt${points !== 1 ? 's' : ''})`;
                                 } else {
                                     resultText = '❌ Miss';
                                 }
@@ -120,14 +125,21 @@ function PlayerPredictionsModal({ isOpen, onClose, targetPlayerId, targetPlayerN
                                         
                                         {isLocked ? (
                                             userPred ? (
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
                                                     <span style={{ fontWeight: 'bold', fontSize: '1.2rem', color: 'white' }}>
                                                         {userPred.home} - {userPred.away}
                                                     </span>
                                                     {match.status === 'FINISHED' && (
-                                                        <span style={{ fontSize: '0.8rem', color: points === 3 ? '#f1c40f' : (points === 1 ? '#2ecc71' : '#e74c3c') }}>
-                                                            {resultText}
-                                                        </span>
+                                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                                                            <span style={{ fontSize: '0.8rem', color: resultText.startsWith('🎯') ? '#f1c40f' : (resultText.startsWith('✅') ? '#2ecc71' : '#e74c3c') }}>
+                                                                {resultText}
+                                                            </span>
+                                                            {badgesText && (
+                                                                <span style={{ fontSize: '0.7rem', color: '#c084fc', fontWeight: 'bold' }}>
+                                                                    {badgesText}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </div>
                                             ) : (

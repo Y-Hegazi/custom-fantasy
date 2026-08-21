@@ -1,17 +1,13 @@
 import { db } from '../firebase';
 import { doc, setDoc, writeBatch, getDoc, runTransaction } from "firebase/firestore";
-
-const API_BASE_URL = "/api"; 
-const COMPETITION_CODE = "PL";
-const SEASON = "2025";
+import { SEASON, COMPETITION_CODE, API_BASE_URL } from '../config';
+import { generateMatchOdds } from './oddsEngine';
 
 export const processMatchUpdate = async (setStatusCallback) => {
-    setStatusCallback('Fetching data from Football-Data.org...');
-    const apiKey = import.meta.env.VITE_FOOTBALL_DATA_ORG_KEY;
-    if (!apiKey) throw new Error("API Key missing");
-
-    const headers = { "X-Auth-Token": apiKey };
-    const response = await fetch(`${API_BASE_URL}/competitions/${COMPETITION_CODE}/matches?season=${SEASON}`, { headers });
+    setStatusCallback('Fetching data from API proxy...');
+    
+    // We no longer need the API key here
+    const response = await fetch(`${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}`);
     const data = await response.json();
 
     if (!data.matches) throw new Error('No matches found in API response');
@@ -32,6 +28,7 @@ export const processMatchUpdate = async (setStatusCallback) => {
              date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
              timestamp: new Date(match.utcDate).getTime(),
              status: match.status,
+             odds: generateMatchOdds(match.homeTeam.name, match.awayTeam.name, String(match.id)),
              score: {
                  fullTime: {
                      home: match.score.fullTime.home,
@@ -74,7 +71,7 @@ export const processMatchUpdate = async (setStatusCallback) => {
     
     Object.keys(matchesByGameweek).forEach(gw => {
         const matches = matchesByGameweek[gw].sort((a, b) => a.timestamp - b.timestamp);
-        const docRef = doc(db, "matches_cache", `week_${gw}`);
+        const docRef = doc(db, "matches_cache", `${SEASON}_week_${gw}`);
         batch.set(docRef, { matches: matches, lastUpdated: new Date().toISOString() });
     });
     
@@ -92,12 +89,16 @@ export const processMatchUpdate = async (setStatusCallback) => {
     }
       
     const systemRef = doc(db, "system", "status");
-    await setDoc(systemRef, { currentRound: String(nextMatchday), lastUpdated: new Date().toISOString() });
+    await setDoc(systemRef, { 
+        currentRound: String(nextMatchday), 
+        lastUpdated: new Date().toISOString(),
+        season: SEASON 
+    });
 
     // --- NEW: Fetch Standings (for Form) ---
     setStatusCallback('Fetching Standings (Team Form)...');
     try {
-        const standingsResponse = await fetch(`${API_BASE_URL}/competitions/${COMPETITION_CODE}/standings?season=${SEASON}`, { headers });
+        const standingsResponse = await fetch(`${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/standings&season=${SEASON}`);
         const standingsData = await standingsResponse.json();
         
         if (standingsData.standings) {
@@ -105,9 +106,6 @@ export const processMatchUpdate = async (setStatusCallback) => {
             const totalTable = standingsData.standings.find(s => s.type === 'TOTAL');
             if (totalTable && totalTable.table) {
                 totalTable.table.forEach(entry => {
-                    // entry.form is usually "W,L,D,W,W" (comma separate?)
-                    // The API actually returns "W,L,D,W,W" as a string usually, but let's check format 
-                    // commonly it's comma separated, but sometimes just "WLDWW"
                     formMap[entry.team.name] = entry.form; 
                 });
                 
@@ -140,18 +138,22 @@ export const checkForAutoUpdate = async () => {
             shouldUpdate = true;
         } else {
             const data = systemSnap.data();
-            const lastUpdated = new Date(data.lastUpdated).getTime();
-            const now = new Date().getTime();
-            const HOURS_24 = 24 * 60 * 60 * 1000;
+            if (data.season !== SEASON) {
+                shouldUpdate = true;
+            } else {
+                const lastUpdated = new Date(data.lastUpdated).getTime();
+                const now = new Date().getTime();
+                const HOURS_24 = 24 * 60 * 60 * 1000;
 
-            // Simple 24h check, but can be smarter (e.g., check if it's past 2am)
-            if (now - lastUpdated > HOURS_24) {
-                 shouldUpdate = true;
+                // 24h check
+                if (now - lastUpdated > HOURS_24) {
+                     shouldUpdate = true;
+                }
             }
         }
 
         if (shouldUpdate) {
-            console.log("Auto-Update Triggered: Data is stale.");
+            console.log("Auto-Update Triggered: Season changed or Data is stale.");
             await processMatchUpdate((msg) => console.log(`[Auto-Update]: ${msg}`));
         } else {
             console.log("Auto-Update Skipped: Data is fresh.");
@@ -163,7 +165,7 @@ export const checkForAutoUpdate = async () => {
 
 export const tryTriggerLiveUpdate = async (gameweekId) => {
     try {
-        const docId = `week_${gameweekId}`;
+        const docId = `${SEASON}_week_${gameweekId}`;
         const docRef = doc(db, "matches_cache", docId);
         
         // 1. Transaction to check and lock
@@ -171,7 +173,11 @@ export const tryTriggerLiveUpdate = async (gameweekId) => {
         
         await runTransaction(db, async (transaction) => {
             const docSnap = await transaction.get(docRef);
-            if (!docSnap.exists()) return; // Should exist if we are viewing it
+            if (!docSnap.exists()) {
+                shouldFetch = true;
+                transaction.set(docRef, { matches: [], lastUpdated: new Date().toISOString() });
+                return;
+            }
             
             const data = docSnap.data();
             const lastUpdated = data.lastUpdated ? new Date(data.lastUpdated).getTime() : 0;
@@ -193,11 +199,7 @@ export const tryTriggerLiveUpdate = async (gameweekId) => {
         console.log(`[Live Update] acting as LEADER for GW ${gameweekId}. Fetching...`);
 
         // 2. Fetch specific gameweek (Save data)
-        const apiKey = import.meta.env.VITE_FOOTBALL_DATA_ORG_KEY;
-        if (!apiKey) throw new Error("API Key missing");
-        
-        const headers = { "X-Auth-Token": apiKey };
-        const response = await fetch(`${API_BASE_URL}/competitions/${COMPETITION_CODE}/matches?season=${SEASON}&matchday=${gameweekId}`, { headers });
+        const response = await fetch(`${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${gameweekId}`);
         const data = await response.json();
         
         if (!data.matches) throw new Error("No matches found");
@@ -211,6 +213,7 @@ export const tryTriggerLiveUpdate = async (gameweekId) => {
              date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
              timestamp: new Date(match.utcDate).getTime(),
              status: match.status,
+             odds: generateMatchOdds(match.homeTeam.name, match.awayTeam.name, String(match.id)),
              score: {
                  fullTime: {
                      home: match.score.fullTime.home,

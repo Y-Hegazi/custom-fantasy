@@ -1,6 +1,8 @@
+import { SEASON } from './config';
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
 import { collection, doc, getDoc, getDocs } from "firebase/firestore";
+import { calculatePredictionPoints } from './utils/oddsEngine';
 
 function H2HLeaderboard({ league, currentRound }) {
     const [standings, setStandings] = useState([]);
@@ -61,7 +63,7 @@ function H2HLeaderboard({ league, currentRound }) {
 
                 // Process each round
                 for (const roundNum of roundsToProcess) {
-                    const gwSnap = await getDoc(doc(db, "gameweeks", `gameweek_${roundNum}`));
+                    const gwSnap = await getDoc(doc(db, "gameweeks", `${SEASON}_gameweek_${roundNum}`));
                     
                     // Skip if gameweek not finalized - matches might not be complete
                     if (!gwSnap.exists() || !gwSnap.data().isFinalized) {
@@ -70,7 +72,7 @@ function H2HLeaderboard({ league, currentRound }) {
                     }
 
                     // 1. Fetch MATCH RESULTS from cache
-                    const cacheSnap = await getDoc(doc(db, "matches_cache", `week_${roundNum}`));
+                    const cacheSnap = await getDoc(doc(db, "matches_cache", `${SEASON}_week_${roundNum}`));
                     if (!cacheSnap.exists()) {
                         console.log(`[H2H] No match cache for round ${roundNum}`);
                         continue;
@@ -82,13 +84,14 @@ function H2HLeaderboard({ league, currentRound }) {
                         if (match.status === 'FINISHED' && match.score?.fullTime?.home !== null) {
                             matchResults[String(match.id)] = {
                                 home: match.score.fullTime.home,
-                                away: match.score.fullTime.away
+                                away: match.score.fullTime.away,
+                                odds: match.odds
                             };
                         }
                     });
 
                     // 2. Fetch PREDICTIONS and CALCULATE SCORES on-the-fly
-                    const predsSnap = await getDocs(collection(db, "gameweeks", `gameweek_${roundNum}`, "predictions"));
+                    const predsSnap = await getDocs(collection(db, "gameweeks", `${SEASON}_gameweek_${roundNum}`, "predictions"));
                     const roundScores = {};
                     let totalScore = 0;
                     let count = 0;
@@ -97,23 +100,20 @@ function H2HLeaderboard({ league, currentRound }) {
                         const playerData = predDoc.data();
                         let playerPoints = 0;
 
-                        // Calculate points for this player using their predictions
+                        // Calculate points for this player using their predictions & odds
                         for (const matchId in playerData.scores) {
                             const prediction = playerData.scores[matchId];
                             const result = matchResults[matchId];
                             
                             if (prediction && result) {
-                                const predHome = parseInt(prediction.home, 10);
-                                const predAway = parseInt(prediction.away, 10);
-                                
-                                // Exact score match
-                                if (predHome === result.home && predAway === result.away) {
-                                    playerPoints += POINTS_EXACT_SCORE;
-                                } 
-                                // Correct result (W/D/L)
-                                else if (getMatchOutcome(predHome, predAway) === getMatchOutcome(result.home, result.away)) {
-                                    playerPoints += POINTS_CORRECT_RESULT;
-                                }
+                                const res = calculatePredictionPoints(
+                                    prediction.home,
+                                    prediction.away,
+                                    result.home,
+                                    result.away,
+                                    result.odds
+                                );
+                                playerPoints += res.totalPoints;
                             }
                         }
 

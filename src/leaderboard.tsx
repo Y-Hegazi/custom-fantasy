@@ -1,11 +1,8 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase.js';
+import { db } from './firebase';
 import { collection, query, getDocs, doc, runTransaction, getDoc } from "firebase/firestore";
 import PlayerPredictionsModal from './PlayerPredictionsModal';
-
-const API_BASE_URL = "/api";
-const COMPETITION_CODE = "PL";
-// Note: Season is passed as prop, but we might want to ensure it's "2025" or passed correctly from App.
+import { calculatePredictionPoints } from './utils/oddsEngine';
 
 const POINTS_EXACT_SCORE = 3;
 const POINTS_CORRECT_RESULT = 1;
@@ -38,12 +35,7 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
       setError('');
       setStatusMessage('');
       
-      const apiKey = import.meta.env.VITE_FOOTBALL_DATA_ORG_KEY;
-      if (!apiKey) {
-          setError("API Key missing");
-          setIsLoading(false);
-          return;
-      }
+
       
       try {
         // --- 1. FETCH LEAGUE MEMBERS (If Private League) ---
@@ -69,7 +61,7 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
           setIsFinalized(false);
         }
 
-        const cacheRef = doc(db, "matches_cache", `week_${currentRound}`);
+        const cacheRef = doc(db, "matches_cache", `${season}_week_${currentRound}`);
         const cacheSnap = await getDoc(cacheRef);
         
         const matchResults = {};
@@ -82,7 +74,8 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
                  if (match.status === 'FINISHED' && match.score.fullTime.home !== null) {
                      matchResults[String(match.id)] = {
                          home: match.score.fullTime.home,
-                         away: match.score.fullTime.away
+                         away: match.score.fullTime.away,
+                         odds: match.odds
                      };
                  }
              });
@@ -113,27 +106,30 @@ function GameweekLeaderboard({ gameWeekId, currentRound, season, leagueId }) {
           let totalPoints = 0;
           let exactCount = 0;
           let correctResultCount = 0;
+          let bonusCount = 0;
 
           for (const matchId in playerData.scores) {
             const prediction = playerData.scores[matchId];
             const result = matchResults[matchId];
             if (prediction && result) {
-              const predHome = parseInt(prediction.home, 10);
-              const predAway = parseInt(prediction.away, 10);
-              if (predHome === result.home && predAway === result.away) {
-                totalPoints += POINTS_EXACT_SCORE;
-                exactCount++;
-              } else if (getMatchOutcome(predHome, predAway) === getMatchOutcome(result.home, result.away)) {
-                totalPoints += POINTS_CORRECT_RESULT;
-                correctResultCount++;
-              }
+              const res = calculatePredictionPoints(
+                prediction.home,
+                prediction.away,
+                result.home,
+                result.away,
+                result.odds
+              );
+              totalPoints += res.totalPoints;
+              if (res.isExact) exactCount++;
+              if (res.isOutcome && !res.isExact) correctResultCount++;
+              if (res.multiplier > 1) bonusCount++;
             }
           }
           playersList.push({ 
             id: doc.id, 
             name: playerData.userName || 'Anonymous', 
             points: totalPoints,
-            details: `(${exactCount} Exact, ${correctResultCount} Correct)` 
+            details: `(${exactCount} Exact, ${correctResultCount} Outcome${bonusCount > 0 ? `, ⚡${bonusCount} Bonus` : ''})` 
           });
         });
         

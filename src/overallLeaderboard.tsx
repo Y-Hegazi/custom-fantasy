@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase.js';
+import { db } from './firebase';
 import { doc, getDoc, collection, query, onSnapshot, orderBy, getDocs, writeBatch } from "firebase/firestore";
 
 function OverallLeaderboard({ leagueId }) {

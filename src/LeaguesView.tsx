@@ -13,6 +13,17 @@ function LeaguesView({ user, onSelectLeague }) {
   const [newLeagueName, setNewLeagueName] = useState('');
   const [leagueType, setLeagueType] = useState('classic'); // 'classic' | 'h2h'
   const [joinCode, setJoinCode] = useState('');
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+
+  // Auto-fill join code from URL params (e.g. /leagues?join=CODE)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('join');
+    if (code) {
+      setJoinCode(code.trim().toUpperCase());
+      setMode('join');
+    }
+  }, []);
 
   const fetchMyLeagues = useCallback(async () => {
     if (!user) return;
@@ -347,27 +358,48 @@ function LeaguesView({ user, onSelectLeague }) {
                                   <h4>{league.type === 'h2h' ? '⚔️' : '🏆'} {league.name}</h4>
                                   {league.type === 'h2h' && <span className="h2h-badge">H2H</span>}
                               </div>
-                              <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                              <div style={{display:'flex', alignItems:'center', gap:'8px', marginTop:'6px'}}>
                                 <span className="league-code">Code: {league.code}</span>
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         navigator.clipboard.writeText(league.code);
-                                        // Visual feedback could be improved but simple alert for now is reliable
-                                        // or simple text change
-                                        e.target.innerText = "✅";
-                                        setTimeout(() => e.target.innerText = "📋", 1500);
+                                        setCopyFeedback(`code-${league.id}`);
+                                        setTimeout(() => setCopyFeedback(null), 2000);
                                     }}
                                     style={{
-                                        background:'none', 
-                                        border:'none', 
+                                        background:'#333', 
+                                        border:'1px solid #555', 
+                                        borderRadius:'4px',
                                         cursor:'pointer', 
-                                        fontSize:'1.2rem',
-                                        padding:'0'
+                                        fontSize:'0.75rem',
+                                        padding:'2px 6px',
+                                        color:'white'
                                     }}
                                     title="Copy Code"
                                 >
-                                    📋
+                                    {copyFeedback === `code-${league.id}` ? '✅ Copied' : '📋 Copy Code'}
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        const inviteUrl = `${window.location.origin}/leagues?join=${league.code}`;
+                                        navigator.clipboard.writeText(inviteUrl);
+                                        setCopyFeedback(`link-${league.id}`);
+                                        setTimeout(() => setCopyFeedback(null), 2000);
+                                    }}
+                                    style={{
+                                        background:'#1e3a8a', 
+                                        border:'1px solid #3b82f6', 
+                                        borderRadius:'4px',
+                                        cursor:'pointer', 
+                                        fontSize:'0.75rem',
+                                        padding:'2px 6px',
+                                        color:'white'
+                                    }}
+                                    title="Copy Direct Invite Link"
+                                >
+                                    {copyFeedback === `link-${league.id}` ? '✅ Link Copied' : '🔗 Copy Link'}
                                 </button>
                               </div>
                               {league.adminId === user.uid && (
@@ -378,7 +410,7 @@ function LeaguesView({ user, onSelectLeague }) {
                                         handleDeleteLeague(league.id, league.name);
                                     }}
                                 >
-                                    🗑️
+                                    Delete
                                 </button>
                               )}
                               
