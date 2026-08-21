@@ -124,19 +124,24 @@ alter table public.leagues enable row level security;
 alter table public.league_members enable row level security;
 alter table public.system_announcements enable row level security;
 
--- Profiles: Anyone authenticated can view all profiles (for leaderboards); users can update their own profile
+-- Profiles: Anyone authenticated can view all profiles (for leaderboards); users can update their own profile; admin or user can delete
 create policy "Allow public read for profiles" on public.profiles for select using (true);
 create policy "Allow users to update own profile" on public.profiles for update using (auth.uid() = id);
+create policy "Allow admin and self delete profiles" on public.profiles for delete using (
+    auth.uid() = id or (auth.jwt()->>'email') = 'yousefhegazi74@gmail.com'
+);
 
 -- Matches Cache: Public read; authenticated can trigger cache update
 create policy "Allow public read matches_cache" on public.matches_cache for select using (true);
 create policy "Allow write matches_cache" on public.matches_cache for all using (auth.role() = 'authenticated' or auth.role() = 'service_role');
 
--- Predictions: Anyone can read predictions (for leaderboards & H2H); users can only write/update their own
+-- Predictions: Anyone can read predictions (for leaderboards & H2H); users can only write/update their own; admin can delete
 create policy "Allow public read predictions" on public.predictions for select using (true);
 create policy "Allow user insert own predictions" on public.predictions for insert with check (auth.uid() = user_id);
 create policy "Allow user update own predictions" on public.predictions for update using (auth.uid() = user_id);
-create policy "Allow user delete own predictions" on public.predictions for delete using (auth.uid() = user_id);
+create policy "Allow admin and user delete predictions" on public.predictions for delete using (
+    auth.uid() = user_id or (auth.jwt()->>'email') = 'yousefhegazi74@gmail.com'
+);
 
 -- Leagues: Public read; authenticated can create leagues
 create policy "Allow public read leagues" on public.leagues for select using (true);

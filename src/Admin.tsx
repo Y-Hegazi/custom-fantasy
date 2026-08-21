@@ -184,12 +184,25 @@ function Admin() {
     setIsLoading(true);
     setStatus(`Deleting user ${userId}...`);
     try {
-      const { error } = await supabase
+      // 1. Delete user predictions
+      await supabase.from('predictions').delete().eq('user_id', userId);
+
+      // 2. Delete user league memberships
+      await supabase.from('league_members').delete().eq('user_id', userId);
+
+      // 3. Delete user profile
+      const { data, error } = await supabase
         .from('profiles')
         .delete()
-        .eq('id', userId);
+        .eq('id', userId)
+        .select();
 
       if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error("Supabase RLS Policy prevented deletion. Please add the admin DELETE policy in your Supabase SQL Editor.");
+      }
+
       setStatus(`✅ User "${name}" deleted from PostgreSQL.`);
       await loadUsers();
     } catch (err: any) {
@@ -469,9 +482,9 @@ function Admin() {
         <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
           <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Database Mode</span>
           <div className="text-sm font-bold text-white mt-1">
-            {supabaseReady ? '⚡ Supabase PG' : '🔥 Firebase DB'}
+            ⚡ Supabase PG
           </div>
-          <span className="text-[10px] text-gray-500 mt-1">{supabaseReady ? 'PostgreSQL Active' : 'Migration Ready'}</span>
+          <span className="text-[10px] text-gray-500 mt-1">PostgreSQL Active</span>
         </div>
 
         <div className="p-3.5 bg-gray-900/80 rounded-xl border border-gray-800 flex flex-col justify-between">
