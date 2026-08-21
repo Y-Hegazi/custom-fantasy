@@ -4,13 +4,13 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth"; // Import the auth service
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBWdHpHec7m_Xcyq8YISscZdcYkoRmIUEw",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "custom-fantasy-b220a.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "custom-fantasy-b220a",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "custom-fantasy-b220a.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "273947739453",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:273947739453:web:c7169327a7d6cc6fc8f154",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-B4ZZR77G9P"
 };
 
 // Initialize Firebase
