@@ -1,16 +1,4 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { 
-  doc, 
-  getDoc, 
-  updateDoc, 
-  setDoc, 
-  collection, 
-  getDocs, 
-  writeBatch,
-  deleteDoc,
-  runTransaction
-} from "firebase/firestore";
 import { SEASON } from './config';
 import { processMatchUpdate } from './utils/dataUpdater';
 import { 
@@ -19,7 +7,7 @@ import {
   autoSnapshotToFirestore 
 } from './utils/backupManager';
 import { calculatePredictionPoints } from './utils/oddsEngine';
-import { isSupabaseConfigured } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 import { settleGameweekScores } from './utils/scoringEngine';
 
 function Admin() {
@@ -43,7 +31,7 @@ function Admin() {
   const [announcementType, setAnnouncementType] = useState<'info' | 'warning' | 'success'>('info');
   const [announcementActive, setAnnouncementActive] = useState(false);
 
-  // 3. User Management State
+  // 3. User & Score Management State
   const [usersList, setUsersList] = useState<any[]>([]);
   const [userSearch, setUserSearch] = useState('');
   const [editingUser, setEditingUser] = useState<any | null>(null);
@@ -56,15 +44,9 @@ function Admin() {
 
   // 5. Gameweek Finalizer State
   const [finalizeGW, setFinalizeGW] = useState('1');
-  const [gwInspectData, setGwInspectData] = useState<{
-    matches: any[];
-    finishedCount: number;
-    totalCount: number;
-    isFinalized: boolean;
-    topScorers: any[];
-  } | null>(null);
+  const [gwInspectData, setGwInspectData] = useState<any | null>(null);
 
-  // Load Announcement, Users, Leagues & Telemetry on Mount
+  // Initial Load
   useEffect(() => {
     loadAnnouncement();
     loadUsers();
@@ -86,31 +68,40 @@ function Admin() {
     }
   };
 
-  // --- ANNOUNCEMENT HANDLERS ---
+  // --- ANNOUNCEMENT HANDLERS (Supabase) ---
   const loadAnnouncement = async () => {
     try {
-      const snap = await getDoc(doc(db, "system", "announcement"));
-      if (snap.exists()) {
-        const data = snap.data();
+      const { data } = await supabase
+        .from('system_announcements')
+        .select('*')
+        .eq('id', 'global')
+        .single();
+
+      if (data) {
         setAnnouncementMsg(data.message || '');
         setAnnouncementType(data.type || 'info');
         setAnnouncementActive(Boolean(data.active));
       }
     } catch (err: any) {
-      console.error("Error loading announcement:", err);
+      console.error("Error loading announcement from Supabase:", err);
     }
   };
 
   const saveAnnouncement = async () => {
     setIsLoading(true);
-    setStatus('Publishing announcement...');
+    setStatus('Publishing announcement to PostgreSQL...');
     try {
-      await setDoc(doc(db, "system", "announcement"), {
-        message: announcementMsg.trim(),
-        type: announcementType,
-        active: announcementActive,
-        updatedAt: new Date().toISOString()
-      });
+      const { error } = await supabase
+        .from('system_announcements')
+        .upsert({
+          id: 'global',
+          message: announcementMsg.trim(),
+          type: announcementType,
+          active: announcementActive,
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
       setStatus(announcementActive ? '✅ Broadcast Announcement Published LIVE!' : '✅ Announcement Saved (Inactive)');
     } catch (err: any) {
       setStatus(`❌ Error saving announcement: ${err.message}`);
@@ -119,15 +110,26 @@ function Admin() {
     }
   };
 
-  // --- USER MANAGEMENT HANDLERS ---
+  // --- USER MANAGEMENT HANDLERS (Supabase) ---
   const loadUsers = async () => {
     try {
-      const snap = await getDocs(collection(db, "users"));
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      list.sort((a: any, b: any) => (b.totalScore || 0) - (a.totalScore || 0));
-      setUsersList(list);
+      const { data: list, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('total_score', { ascending: false });
+
+      if (error) throw error;
+
+      const formatted = (list || []).map(p => ({
+        id: p.id,
+        displayName: p.display_name || 'Manager',
+        email: p.email,
+        totalScore: p.total_score || 0,
+        createdAt: p.created_at
+      }));
+      setUsersList(formatted);
     } catch (err: any) {
-      console.error("Error loading users:", err);
+      console.error("Error loading users from Supabase:", err);
     }
   };
 
@@ -136,8 +138,13 @@ function Admin() {
     setIsLoading(true);
     setStatus(`Updating manager name for ${userId}...`);
     try {
-      await updateDoc(doc(db, "users", userId), { displayName: newDisplayName.trim() });
-      setStatus(`✅ Manager name updated to "${newDisplayName.trim()}"`);
+      const { error } = await supabase
+        .from('profiles')
+        .update({ display_name: newDisplayName.trim() })
+        .eq('id', userId);
+
+      if (error) throw error;
+      setStatus(`✅ Manager name updated to "${newDisplayName.trim()}" in PostgreSQL!`);
       setEditingUser(null);
       await loadUsers();
     } catch (err: any) {
@@ -148,15 +155,20 @@ function Admin() {
   };
 
   const handleAdjustUserScore = async (userId: string, currentScore: number) => {
-    const delta = parseInt(scoreAdjustment);
+    const delta = parseInt(scoreAdjustment, 10);
     if (isNaN(delta)) return alert("Please enter a valid score change number (+/-)");
     const newTotal = Math.max(0, currentScore + delta);
 
     setIsLoading(true);
     setStatus(`Adjusting score by ${delta > 0 ? `+${delta}` : delta} for ${userId}...`);
     try {
-      await updateDoc(doc(db, "users", userId), { totalScore: newTotal });
-      setStatus(`✅ Score updated! New total: ${newTotal} pts`);
+      const { error } = await supabase
+        .from('profiles')
+        .update({ total_score: newTotal })
+        .eq('id', userId);
+
+      if (error) throw error;
+      setStatus(`✅ Score updated! New total: ${newTotal} pts in PostgreSQL`);
       setEditingUser(null);
       setScoreAdjustment('');
       await loadUsers();
@@ -172,8 +184,13 @@ function Admin() {
     setIsLoading(true);
     setStatus(`Deleting user ${userId}...`);
     try {
-      await deleteDoc(doc(db, "users", userId));
-      setStatus(`✅ User "${name}" deleted.`);
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+
+      if (error) throw error;
+      setStatus(`✅ User "${name}" deleted from PostgreSQL.`);
       await loadUsers();
     } catch (err: any) {
       setStatus(`❌ Failed to delete user: ${err.message}`);
@@ -182,14 +199,18 @@ function Admin() {
     }
   };
 
-  // --- LEAGUE MANAGEMENT HANDLERS ---
+  // --- LEAGUE MANAGEMENT HANDLERS (Supabase) ---
   const loadLeagues = async () => {
     try {
-      const snap = await getDocs(collection(db, "leagues"));
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setLeaguesList(list);
+      const { data: list, error } = await supabase
+        .from('leagues')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setLeaguesList(list || []);
     } catch (err: any) {
-      console.error("Error loading leagues:", err);
+      console.error("Error loading leagues from Supabase:", err);
     }
   };
 
@@ -198,8 +219,13 @@ function Admin() {
     setIsLoading(true);
     setStatus(`Deleting league ${name}...`);
     try {
-      await deleteDoc(doc(db, "leagues", leagueId));
-      setStatus(`✅ League "${name}" deleted.`);
+      const { error } = await supabase
+        .from('leagues')
+        .delete()
+        .eq('id', leagueId);
+
+      if (error) throw error;
+      setStatus(`✅ League "${name}" deleted from PostgreSQL.`);
       await loadLeagues();
     } catch (err: any) {
       setStatus(`❌ Failed to delete league: ${err.message}`);
@@ -208,22 +234,28 @@ function Admin() {
     }
   };
 
-  // --- GAMEWEEK FINALIZER HANDLERS ---
+  // --- GAMEWEEK FINALIZER HANDLERS (Supabase) ---
   const inspectGameweek = async () => {
     setIsLoading(true);
     setStatus(`Inspecting Gameweek ${finalizeGW}...`);
     try {
-      // 1. Fetch matches
-      const cacheSnap = await getDoc(doc(db, "matches_cache", `${SEASON}_week_${finalizeGW}`));
-      const matches = cacheSnap.exists() ? (cacheSnap.data().matches || []) : [];
+      // 1. Fetch matches from Supabase
+      const { data: cacheRow } = await supabase
+        .from('matches_cache')
+        .select('matches')
+        .eq('id', `${SEASON}_week_${finalizeGW}`)
+        .single();
+
+      const matches = cacheRow?.matches || [];
       const finishedCount = matches.filter((m: any) => m.status === 'FINISHED').length;
 
-      // 2. Fetch Gameweek status
-      const gwSnap = await getDoc(doc(db, "gameweeks", `${SEASON}_gameweek_${finalizeGW}`));
-      const isFinalized = gwSnap.exists() ? Boolean(gwSnap.data().isFinalized) : false;
+      // 2. Fetch predictions & compute leaderboard preview
+      const { data: predictions } = await supabase
+        .from('predictions')
+        .select('*')
+        .eq('season', SEASON)
+        .eq('gameweek', parseInt(finalizeGW, 10));
 
-      // 3. Fetch predictions & compute leaderboard preview
-      const predsSnap = await getDocs(collection(db, "gameweeks", `${SEASON}_gameweek_${finalizeGW}`, "predictions"));
       const resultsMap: Record<string, any> = {};
       matches.forEach((m: any) => {
         if (m.status === 'FINISHED' && m.score?.fullTime?.home !== null) {
@@ -235,29 +267,34 @@ function Admin() {
         }
       });
 
-      const userScores: any[] = [];
-      predsSnap.forEach(pDoc => {
-        const data = pDoc.data();
-        let pts = 0;
-        for (const mid in data.scores) {
-          const pred = data.scores[mid];
-          const actual = resultsMap[mid];
-          if (pred && actual) {
-            const res = calculatePredictionPoints(pred.home, pred.away, actual.home, actual.away, actual.odds);
-            pts += res.totalPoints;
-          }
-        }
-        userScores.push({ id: pDoc.id, name: data.userName || 'Anonymous', points: pts });
+      const { data: profiles } = await supabase.from('profiles').select('id, display_name');
+      const nameMap: Record<string, string> = {};
+      (profiles || []).forEach(p => {
+        nameMap[p.id] = p.display_name || 'Manager';
       });
 
-      userScores.sort((a, b) => b.points - a.points);
+      const userScores: Record<string, number> = {};
+      (predictions || []).forEach((pred: any) => {
+        const uid = pred.user_id;
+        const actual = resultsMap[String(pred.match_id)];
+        if (actual && pred.home_score !== null && pred.away_score !== null) {
+          const res = calculatePredictionPoints(pred.home_score, pred.away_score, actual.home, actual.away, actual.odds);
+          userScores[uid] = (userScores[uid] || 0) + res.totalPoints;
+        }
+      });
+
+      const leaderList = Object.entries(userScores).map(([uid, pts]) => ({
+        id: uid,
+        name: nameMap[uid] || 'Manager',
+        points: pts
+      })).sort((a, b) => b.points - a.points);
 
       setGwInspectData({
         matches,
         finishedCount,
         totalCount: matches.length,
-        isFinalized,
-        topScorers: userScores.slice(0, 5)
+        isFinalized: false,
+        topScorers: leaderList.slice(0, 5)
       });
 
       setStatus(`Gameweek ${finalizeGW} loaded: ${finishedCount}/${matches.length} Finished.`);
@@ -270,67 +307,14 @@ function Admin() {
 
   const handleFinalizeGameweek = async () => {
     if (!gwInspectData) return;
-    if (!confirm(`🏆 FINALIZING GAMEWEEK ${finalizeGW}:\n\nThis will distribute points to all user profiles and mark Gameweek ${finalizeGW} as FINALIZED.\nProceed?`)) return;
+    if (!confirm(`🏆 FINALIZING GAMEWEEK ${finalizeGW}:\n\nThis will distribute points to all user profiles in PostgreSQL.\nProceed?`)) return;
 
     setIsLoading(true);
-    setStatus(`Creating safety snapshot before finalizing GW ${finalizeGW}...`);
+    setStatus(`Finalizing Gameweek ${finalizeGW} and distributing points in PostgreSQL...`);
 
     try {
-      await autoSnapshotToFirestore(`Pre-Finalize-GW${finalizeGW}`);
-      setStatus(`Finalizing Gameweek ${finalizeGW} and writing points...`);
-
-      const predsSnap = await getDocs(collection(db, "gameweeks", `${SEASON}_gameweek_${finalizeGW}`, "predictions"));
-      const resultsMap: Record<string, any> = {};
-      gwInspectData.matches.forEach((m: any) => {
-        if (m.status === 'FINISHED' && m.score?.fullTime?.home !== null) {
-          resultsMap[String(m.id)] = {
-            home: m.score.fullTime.home,
-            away: m.score.fullTime.away,
-            odds: m.odds
-          };
-        }
-      });
-
-      const batch = writeBatch(db);
-      for (const pDoc of predsSnap.docs) {
-        const data = pDoc.data();
-        let pts = 0;
-        for (const mid in data.scores) {
-          const pred = data.scores[mid];
-          const actual = resultsMap[mid];
-          if (pred && actual) {
-            const res = calculatePredictionPoints(pred.home, pred.away, actual.home, actual.away, actual.odds);
-            pts += res.totalPoints;
-          }
-        }
-
-        // Update prediction doc with calculated points
-        batch.update(pDoc.ref, { points: pts });
-
-        // Update user global total score
-        const userRef = doc(db, "users", pDoc.id);
-        const userDoc = await getDoc(userRef);
-        if (userDoc.exists()) {
-          const currentTotal = userDoc.data().totalScore || 0;
-          batch.update(userRef, { totalScore: currentTotal + pts });
-        }
-      }
-
-      // Mark gameweek finalized
-      const gwRef = doc(db, "gameweeks", `${SEASON}_gameweek_${finalizeGW}`);
-      batch.set(gwRef, { isFinalized: true }, { merge: true });
-
-      await batch.commit();
-
-      // Run Supabase PostgreSQL Settlement Engine
-      try {
-        const settlement = await settleGameweekScores(parseInt(finalizeGW, 10), SEASON);
-        console.log("Supabase Gameweek Settlement result:", settlement);
-      } catch (supaErr) {
-        console.warn("Supabase settlement note:", supaErr);
-      }
-
-      setStatus(`✅ Gameweek ${finalizeGW} successfully finalized! Points awarded to ${predsSnap.docs.length} managers across PostgreSQL and Cloud databases.`);
+      const settlement = await settleGameweekScores(parseInt(finalizeGW, 10), SEASON);
+      setStatus(`✅ Gameweek ${finalizeGW} successfully settled! ${settlement.totalPredictionsScored} predictions scored across ${settlement.totalUsersUpdated} managers.`);
       await inspectGameweek();
       await loadUsers();
     } catch (err: any) {
@@ -357,15 +341,18 @@ function Admin() {
     setIsLoading(true);
     setStatus(`Loading matches for Week ${correctionGW}...`);
     try {
-      const cacheRef = doc(db, "matches_cache", `${SEASON}_week_${correctionGW}`);
-      const cacheSnap = await getDoc(cacheRef);
+      const { data: cacheRow } = await supabase
+        .from('matches_cache')
+        .select('matches')
+        .eq('id', `${SEASON}_week_${correctionGW}`)
+        .single();
       
-      if (cacheSnap.exists()) {
-        setCorrectionMatches(cacheSnap.data().matches || []);
-        setStatus(`Loaded ${cacheSnap.data().matches?.length || 0} matches for Week ${correctionGW}`);
+      if (cacheRow && cacheRow.matches) {
+        setCorrectionMatches(cacheRow.matches);
+        setStatus(`Loaded ${cacheRow.matches.length} matches for Week ${correctionGW} from PostgreSQL`);
       } else {
         setCorrectionMatches([]);
-        setStatus(`No data found for Week ${correctionGW}`);
+        setStatus(`No match data found for Week ${correctionGW}`);
       }
     } catch (e: any) {
       setStatus(`Error: ${e.message}`);
@@ -395,24 +382,21 @@ function Admin() {
         return m;
       });
 
-      const overrideRef = doc(db, "system", "score_overrides");
-      const overrideSnap = await getDoc(overrideRef);
-      const currentOverrides = overrideSnap.exists() ? (overrideSnap.data().overrides || {}) : {};
-      
-      currentOverrides[`${correctionGW}_${matchId}`] = {
-        home: editHome === '' ? null : parseInt(editHome, 10),
-        away: editAway === '' ? null : parseInt(editAway, 10)
-      };
+      const { error } = await supabase
+        .from('matches_cache')
+        .upsert({
+          id: `${SEASON}_week_${correctionGW}`,
+          season: SEASON,
+          gameweek: parseInt(correctionGW, 10),
+          matches: updatedMatches,
+          last_updated: new Date().toISOString()
+        });
 
-      await setDoc(overrideRef, { overrides: currentOverrides }, { merge: true });
-      await setDoc(doc(db, "matches_cache", `${SEASON}_week_${correctionGW}`), {
-        matches: updatedMatches,
-        lastUpdated: new Date().toISOString()
-      }, { merge: true });
+      if (error) throw error;
 
       setCorrectionMatches(updatedMatches);
       setEditingMatch(null);
-      setStatus(`✅ Score updated and locked for match ${matchId}`);
+      setStatus(`✅ Score updated and saved to PostgreSQL for match ${matchId}`);
     } catch (e: any) {
       setStatus(`❌ Error: ${e.message}`);
     } finally {
@@ -421,83 +405,28 @@ function Admin() {
   };
 
   const recalculateScores = async () => {
-    if (!confirm("⚠️ This will recalculate ALL user scores from ALL finalized gameweeks based on cached match results. Continue?")) return;
+    if (!confirm("⚠️ This will recalculate ALL user scores across all gameweeks based on PostgreSQL cached results. Continue?")) return;
     
     setIsLoading(true);
-    setStatus("Starting heavy recalculation...");
+    setStatus("Starting recalculation with Supabase scoring engine...");
     
     try {
-        const usersSnap = await getDocs(collection(db, "users"));
-        const userScores: Record<string, number> = {};
-        usersSnap.forEach(doc => userScores[doc.id] = 0);
-
-        const gwSnap = await getDocs(collection(db, "gameweeks"));
-        
-        for (const gwDoc of gwSnap.docs) {
-            if (!gwDoc.data().isFinalized) continue;
-            
-            const gwId = gwDoc.id; 
-            if (!gwId.startsWith(`${SEASON}_`)) continue;
-            
-            const parts = gwId.split('_');
-            const gwNum = parts[parts.length - 1];
-            if (!gwNum) continue;
-
-            const predSnap = await getDocs(collection(db, "gameweeks", gwId, "predictions"));
-            const cacheSnap = await getDoc(doc(db, "matches_cache", `${SEASON}_week_${gwNum}`));
-            
-            if (!cacheSnap.exists()) continue;
-            const matches = cacheSnap.data().matches || [];
-            
-            const results: Record<string, any> = {};
-            matches.forEach(m => {
-                if (m.status === 'FINISHED' && m.score.fullTime.home !== null) {
-                    results[String(m.id)] = { 
-                        home: m.score.fullTime.home, 
-                        away: m.score.fullTime.away,
-                        odds: m.odds 
-                    };
-                }
-            });
-
-            predSnap.forEach(predDoc => {
-                const uid = predDoc.id;
-                const scores = predDoc.data().scores || {};
-                let points = 0;
-                
-                for (const mid in scores) {
-                    const p = scores[mid];
-                    const r = results[mid];
-                    if (p && r) {
-                        const res = calculatePredictionPoints(
-                            p.home,
-                            p.away,
-                            r.home,
-                            r.away,
-                            r.odds
-                        );
-                        points += res.totalPoints;
-                    }
-                }
-                
-                if (userScores[uid] !== undefined) {
-                    userScores[uid] += points;
-                }
-            });
+      let totalScored = 0;
+      for (let gw = 1; gw <= 38; gw++) {
+        try {
+          const settlement = await settleGameweekScores(gw, SEASON);
+          totalScored += settlement.totalPredictionsScored;
+        } catch {
+          // ignore empty
         }
+      }
 
-        const batch = writeBatch(db);
-        Object.keys(userScores).forEach(uid => {
-            batch.update(doc(db, "users", uid), { totalScore: userScores[uid] });
-        });
-        await batch.commit();
-
-        setStatus("✅ Recalculation Complete! All user totals updated.");
-        await loadUsers();
+      setStatus(`✅ Recalculation Complete! Recalculated ${totalScored} predictions.`);
+      await loadUsers();
     } catch (e: any) {
-        setStatus("❌ Recalculation Failed: " + e.message);
+      setStatus("❌ Recalculation Failed: " + e.message);
     } finally {
-        setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
@@ -1068,26 +997,17 @@ function Admin() {
 
         <button
           onClick={async () => {
-            if (!confirm("⚠️ DANGER: This will set ALL user scores to 0. An auto-snapshot will be created first.")) return;
+            if (!confirm("⚠️ DANGER: This will set ALL manager scores to 0 in PostgreSQL.")) return;
             setIsLoading(true);
             try {
-              setStatus('Creating emergency pre-reset snapshot in Firestore...');
-              const snapId = await autoSnapshotToFirestore('Pre-Season-Reset Snapshot');
-              setStatus(`Snapshot saved (${snapId}). Resetting scores...`);
+              setStatus('Resetting all profile scores in PostgreSQL...');
+              const { error } = await supabase
+                .from('profiles')
+                .update({ total_score: 0 });
 
-              const batch = writeBatch(db);
-              const usersSnap = await getDocs(collection(db, "users"));
-              usersSnap.forEach(doc => batch.update(doc.ref, { totalScore: 0 }));
-              
-              const gwSnap = await getDocs(collection(db, "gameweeks"));
-              gwSnap.forEach(doc => {
-                if (doc.id.startsWith(`${SEASON}_`)) {
-                  batch.update(doc.ref, { isFinalized: false });
-                }
-              });
+              if (error) throw error;
 
-              await batch.commit();
-              setStatus(`✅ Season reset! Scores = 0. (Safety snapshot saved: ${snapId})`);
+              setStatus(`✅ Season reset! All manager total scores reset to 0 in PostgreSQL.`);
               await loadUsers();
             } catch(e: any) {
               setStatus("Error: " + e.message);
@@ -1098,7 +1018,7 @@ function Admin() {
           disabled={isLoading}
           className="w-full py-2.5 bg-red-800 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition"
         >
-          ☢️ RESET SEASON SCORES (Protected with Auto-Snapshot)
+          ☢️ RESET SEASON SCORES
         </button>
       </div>
 

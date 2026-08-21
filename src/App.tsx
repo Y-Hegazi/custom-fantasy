@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import './App.css';
-import { db } from './firebase';
 import { supabase } from './supabase';
-import { doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
 import GameweekLeaderboard from './leaderboard';
 import OverallLeaderboard from './overallLeaderboard';
 import Admin from './Admin';
@@ -52,21 +50,38 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Global Announcement Listener
+  // Global Announcement Listener (Supabase)
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "system", "announcement"), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.active && data.message) {
-          setAnnouncement({ message: data.message, active: true, type: data.type || 'info' });
+    const fetchAnnouncement = async () => {
+      try {
+        const { data } = await supabase
+          .from('system_announcements')
+          .select('*')
+          .eq('id', 'global')
+          .single();
+        
+        if (data && data.active && data.message) {
+          setAnnouncement({ message: data.message, active: true, type: (data.type as any) || 'info' });
         } else {
           setAnnouncement(null);
         }
-      } else {
+      } catch {
         setAnnouncement(null);
       }
-    });
-    return () => unsub();
+    };
+
+    fetchAnnouncement();
+
+    const channel = supabase
+      .channel('public:system_announcements')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'system_announcements' }, () => {
+        fetchAnnouncement();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   // Bulletproof match loader: loads from Supabase cache & live proxy fallback
@@ -239,17 +254,22 @@ function App() {
   const fetchCurrentGameweek = async () => {
     setIsLoading(true);
     try {
-      const systemRef = doc(db, "system", "status");
-      const systemSnap = await getDoc(systemRef);
-      
-      if (systemSnap.exists() && systemSnap.data().currentRound) {
-        setCurrentRound(String(systemSnap.data().currentRound));
+      const { data } = await supabase
+        .from('matches_cache')
+        .select('gameweek')
+        .order('gameweek', { ascending: false })
+        .limit(1);
+
+      if (data && data.length > 0 && data[0].gameweek) {
+        setCurrentRound(String(data[0].gameweek));
       } else {
         setCurrentRound("1");
       }
     } catch (e) {
       console.error(e);
-      setCurrentRound("1"); 
+      setCurrentRound("1");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -261,105 +281,110 @@ function App() {
     }
   }, [currentRound, user]);
 
+  // Fetch Predictions from Supabase
   useEffect(() => {
     const fetchPredictions = async () => {
-      if (!gameWeekId || !user) return;
-      const docRef = doc(db, "gameweeks", gameWeekId, "predictions", user.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setPredictions(docSnap.data().scores);
-        showToast('Predictions loaded!');
-      } else {
-        setPredictions({});
+      const userId = user?.uid || user?.id;
+      if (!currentRound || !userId) return;
+
+      try {
+        const { data: rows, error } = await supabase
+          .from('predictions')
+          .select('match_id, home_score, away_score')
+          .eq('user_id', userId)
+          .eq('season', SEASON)
+          .eq('gameweek', parseInt(currentRound, 10));
+
+        if (error) throw error;
+
+        if (rows && rows.length > 0) {
+          const map: PredictionsMap = {};
+          rows.forEach((r: any) => {
+            map[String(r.match_id)] = {
+              home: r.home_score !== null && r.home_score !== undefined ? String(r.home_score) : '',
+              away: r.away_score !== null && r.away_score !== undefined ? String(r.away_score) : ''
+            };
+          });
+          setPredictions(map);
+          showToast('Predictions loaded!');
+        } else {
+          setPredictions({});
+        }
+      } catch (err) {
+        console.error("Error loading predictions from Supabase:", err);
       }
     };
     fetchPredictions();
-  }, [gameWeekId, user]);
+  }, [currentRound, user]);
 
-  // Fetch Forms - RELIGIOUSLY LISTEN
-  useEffect(() => {
-    const docRef = doc(db, "system", "standings");
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-        if (docSnap.exists()) {
-            console.log("Forms loaded:", Object.keys(docSnap.data().forms || {}).length);
-            setTeamForms(docSnap.data().forms || {});
-        } else {
-            console.log("No standings data found.");
-        }
-    }, (err) => console.error("Error listening to standings:", err));
-
-    return () => unsubscribe();
-  }, []);
-
-  // H2H Opponent Logic
-  const [h2hOpponent, setH2hOpponent] = useState(null);
+  // H2H Opponent Logic (Supabase)
+  const [h2hOpponent, setH2hOpponent] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchOpponent = async () => {
-        setH2hOpponent(null);
-        if (!currentLeague || currentLeague.type !== 'h2h' || !currentRound || !currentLeague.fixtures) return;
+      const userId = user?.uid || user?.id;
+      setH2hOpponent(null);
+      if (!currentLeague || currentLeague.type !== 'h2h' || !currentRound || !currentLeague.fixtures || !userId) return;
 
-        const roundFixtures = currentLeague.fixtures[currentRound] || [];
-        const myMatch = roundFixtures.find(m => m.player1 === user.uid || m.player2 === user.uid);
-        
-        if (myMatch) {
-            const oppId = myMatch.player1 === user.uid ? myMatch.player2 : myMatch.player1;
-            if (oppId === "AVERAGE") {
-                setH2hOpponent("👻 Average Bot");
-            } else {
-                try {
-                    const oppDoc = await getDoc(doc(db, "users", oppId));
-                    if (oppDoc.exists()) {
-                        setH2hOpponent(oppDoc.data().displayName);
-                    } else {
-                        setH2hOpponent("Unknown Player");
-                    }
-                } catch (e) {
-                     console.error("Error fetching opponent:", e);
-                }
-            }
+      const roundFixtures = currentLeague.fixtures[currentRound] || [];
+      const myMatch = roundFixtures.find((m: any) => m.player1 === userId || m.player2 === userId);
+      
+      if (myMatch) {
+        const oppId = myMatch.player1 === userId ? myMatch.player2 : myMatch.player1;
+        if (oppId === "AVERAGE") {
+          setH2hOpponent("👻 Average Bot");
         } else {
-            setH2hOpponent("No Match"); // Bye week or error
+          try {
+            const { data: oppProfile } = await supabase
+              .from('profiles')
+              .select('display_name')
+              .eq('id', oppId)
+              .single();
+
+            setH2hOpponent(oppProfile?.display_name || "Manager");
+          } catch {
+            setH2hOpponent("Manager");
+          }
         }
+      } else {
+        setH2hOpponent("No Match");
+      }
     };
     fetchOpponent();
   }, [currentLeague, currentRound, user]);
 
   const handleSavePredictions = async () => {
-    if (!gameWeekId || !user) return;
+    const userId = user?.uid || user?.id;
+    if (!userId) {
+      showToast('Please sign in to save your picks.', 'error');
+      return;
+    }
+
     try {
-      const userId = user.uid || user.id;
+      const rowsToUpsert = Object.entries(predictions)
+        .filter(([_, p]) => p && p.home !== '' && p.away !== '' && p.home !== undefined && p.away !== undefined)
+        .map(([matchId, p]) => ({
+          user_id: userId,
+          season: SEASON,
+          gameweek: parseInt(currentRound || "1", 10),
+          match_id: String(matchId),
+          home_score: parseInt(String(p.home), 10),
+          away_score: parseInt(String(p.away), 10),
+          updated_at: new Date().toISOString(),
+        }));
 
-      // 1. Save to Supabase PostgreSQL predictions table
-      if (currentRound) {
-        const rowsToUpsert = Object.entries(predictions)
-          .filter(([_, p]) => p && p.home !== '' && p.away !== '' && p.home !== undefined && p.away !== undefined)
-          .map(([matchId, p]) => ({
-            user_id: userId,
-            season: SEASON,
-            gameweek: parseInt(currentRound, 10),
-            match_id: String(matchId),
-            home_score: parseInt(String(p.home), 10),
-            away_score: parseInt(String(p.away), 10),
-            updated_at: new Date().toISOString(),
-          }));
-
-        if (rowsToUpsert.length > 0) {
-          await supabase.from('predictions').upsert(rowsToUpsert, {
-            onConflict: 'user_id,season,gameweek,match_id',
-          });
-        }
+      if (rowsToUpsert.length === 0) {
+        showToast('Please enter your prediction scores first.', 'error');
+        return;
       }
 
-      // 2. Compatibility mirror
-      const userRef = doc(db, "users", userId);
-      await setDoc(userRef, { 
-          name: user.displayName, 
-          id: userId,
-          totalScore: 0
-      }, { merge: true });
-      await setDoc(doc(db, "gameweeks", gameWeekId, "predictions", userId), { scores: predictions, userName: user.displayName });
-      showToast('Predictions Saved!', 'success');
+      const { error } = await supabase.from('predictions').upsert(rowsToUpsert, {
+        onConflict: 'user_id,season,gameweek,match_id',
+      });
+
+      if (error) throw error;
+
+      showToast('Predictions Saved! 🚀', 'success');
     } catch (e: any) {
       console.error("Save error details:", e);
       showToast(`Error: ${e.message}`, 'error');
