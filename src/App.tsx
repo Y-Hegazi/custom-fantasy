@@ -26,8 +26,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [predictions, setPredictions] = useState<PredictionsMap>({});
   const [apiError, setApiError] = useState('');
-  const [currentRound, setCurrentRound] = useState<string | null>(null);
-  const [gameWeekId, setGameWeekId] = useState<string | null>(null);
+  const [currentRound, setCurrentRound] = useState<string>("1");
+  const [gameWeekId, setGameWeekId] = useState<string>(`${SEASON}_gameweek_1`);
   const [user, setUser] = useState<any | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -69,33 +69,91 @@ function App() {
     return () => unsub();
   }, []);
 
-  // Real-time listener for Matches
+  // Bulletproof match loader: loads from Supabase cache & live proxy fallback
   useEffect(() => {
-    if (!currentRound) return;
+    const roundToLoad = currentRound || "1";
+    let isCancelled = false;
 
-    setIsLoading(true);
-    setApiError('');
-    
-    // Listen to the cache document
-    const docRef = doc(db, "matches_cache", `${SEASON}_week_${currentRound}`);
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            setMatches(data.matches || []);
-            setApiError('');
-        } else {
-            console.warn("No match data found for this week.");
-            setMatches([]);
-            setApiError('Waiting for match data...');
+    const loadMatches = async () => {
+      setIsLoading(true);
+      setApiError('');
+
+      try {
+        // 1. Try Supabase matches_cache first
+        const { data: cacheRow } = await supabase
+          .from('matches_cache')
+          .select('matches')
+          .eq('id', `${SEASON}_week_${roundToLoad}`)
+          .single();
+
+        if (!isCancelled && cacheRow?.matches && cacheRow.matches.length > 0) {
+          setMatches(cacheRow.matches);
+          setIsLoading(false);
+          return;
         }
-        setIsLoading(false);
-    }, (error) => {
-        console.error("Firestore Error:", error);
-        setApiError("Error loading live data.");
-        setIsLoading(false);
-    });
 
-    return () => unsubscribe();
+        // 2. Direct API Proxy Fallback (Works on any device & unauthenticated)
+        const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${roundToLoad}`;
+        const response = await fetch(proxyUrl);
+        const data = await response.json();
+
+        if (data?.matches && data.matches.length > 0) {
+          const formattedMatches = data.matches.map((match: any) => ({
+            id: String(match.id),
+            homeTeam: match.homeTeam?.name || 'Home',
+            awayTeam: match.awayTeam?.name || 'Away',
+            homeLogo: match.homeTeam?.crest || '',
+            awayLogo: match.awayTeam?.crest || '',
+            date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+            timestamp: new Date(match.utcDate).getTime(),
+            status: match.status,
+            odds: generateMatchOdds(match.homeTeam?.name || '', match.awayTeam?.name || '', String(match.id)),
+            score: {
+              fullTime: {
+                home: match.score?.fullTime?.home,
+                away: match.score?.fullTime?.away
+              }
+            }
+          })).sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+          if (!isCancelled) {
+            setMatches(formattedMatches);
+            setIsLoading(false);
+          }
+
+          // Cache in Supabase if session active
+          try {
+            await supabase.from('matches_cache').upsert({
+              id: `${SEASON}_week_${roundToLoad}`,
+              season: SEASON,
+              gameweek: parseInt(roundToLoad, 10),
+              matches: formattedMatches,
+              last_updated: new Date().toISOString()
+            });
+          } catch (e) {
+            // Non-blocking
+          }
+          return;
+        }
+
+        if (!isCancelled) {
+          setApiError('No match fixtures found for this gameweek.');
+          setIsLoading(false);
+        }
+      } catch (err: any) {
+        console.error("Match loading error:", err);
+        if (!isCancelled) {
+          setApiError('Error loading match data. Retrying...');
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadMatches();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [currentRound]);
 
   // LIVE TRIGGER: Crowd-Sourced Cron
