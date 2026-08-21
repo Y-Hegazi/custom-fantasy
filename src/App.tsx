@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import './App.css';
-import { db, auth } from './firebase';
-import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
-// Add onSnapshot to imports
+import { db } from './firebase';
+import { supabase } from './supabase';
 import { doc, setDoc, getDoc, onSnapshot } from "firebase/firestore";
 import GameweekLeaderboard from './leaderboard';
 import OverallLeaderboard from './overallLeaderboard';
@@ -13,15 +12,11 @@ import H2HLeaderboard from './H2HLeaderboard';
 import { checkForAutoUpdate, tryTriggerLiveUpdate } from './utils/dataUpdater';
 import { getMatchGradient, getTeamColor } from './utils/teamColors';
 import TeamForm from './TeamForm';
-import AuthOverlay from './AuthOverlay';
+import { AuthOverlay } from './AuthOverlay';
 import RulesView from './RulesView';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { generateMatchOdds, isUnderdogOutcome, calculatePredictionPoints, UNDERDOG_ODDS_THRESHOLD } from './utils/oddsEngine';
-
-import { User as FirebaseUser } from 'firebase/auth';
-import { User, Match, PredictionsMap } from './types';
-
-// ...
+import { Match, PredictionsMap } from './types';
 
 import { SEASON, COMPETITION_CODE, API_BASE_URL, LOCKOUT_BUFFER_MS } from './config';
 const ADMIN_EMAILS = ["yousefhegazi74@gmail.com"];
@@ -31,9 +26,9 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [predictions, setPredictions] = useState<PredictionsMap>({});
   const [apiError, setApiError] = useState('');
-  const [currentRound, setCurrentRound] = useState(null);
-  const [gameWeekId, setGameWeekId] = useState(null);
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [currentRound, setCurrentRound] = useState<string | null>(null);
+  const [gameWeekId, setGameWeekId] = useState<string | null>(null);
+  const [user, setUser] = useState<any | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const [toast, setToast] = useState({ message: '', visible: false, type: 'info' });
@@ -120,45 +115,67 @@ function App() {
   }, [currentRound]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        setIsCheckingProfile(true); // START LOAD
-        
-        fetchCurrentGameweek();
-        checkForAutoUpdate();
-        
-        // Check Profile
-        try {
-            console.log("Checking profile for:", currentUser.uid);
-            const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-            
-            // Critical check: if no doc, or no name, OR if auth profile itself has no name
-            if (!userDoc.exists() || !userDoc.data().displayName) {
-                console.log("Profile incomplete. Showing onboarding.");
-                setShowOnboarding(true);
-            } else {
-                console.log("Profile complete.");
-                setShowOnboarding(false);
-                
-                // Self-healing: Ensure totalScore exists
-                if (userDoc.data().totalScore === undefined) {
-                    console.log("Healing missing totalScore...");
-                    await setDoc(doc(db, "users", currentUser.uid), { totalScore: 0 }, { merge: true });
-                }
-            }
-        } catch (err) {
-            console.error("Error checking profile:", err);
-            setShowOnboarding(true); // Fail safe
-        } finally {
-            setIsCheckingProfile(false); // END LOAD
-        }
-      } else {
+    const checkUserProfile = async (supabaseUser: any) => {
+      if (!supabaseUser) {
+        setUser(null);
         setIsCheckingProfile(false);
         setIsLoading(false);
+        return;
       }
+
+      setIsCheckingProfile(true);
+      fetchCurrentGameweek();
+      checkForAutoUpdate();
+
+      try {
+        // Query Supabase profiles table
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('display_name, total_score')
+          .eq('id', supabaseUser.id)
+          .single();
+
+        const resolvedName = profile?.display_name || supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name;
+
+        const userObj = {
+          uid: supabaseUser.id,
+          id: supabaseUser.id,
+          email: supabaseUser.email,
+          displayName: resolvedName || '',
+          photoURL: supabaseUser.user_metadata?.avatar_url || '',
+        };
+
+        setUser(userObj);
+
+        if (!resolvedName) {
+          setShowOnboarding(true);
+        } else {
+          setShowOnboarding(false);
+        }
+      } catch (err) {
+        console.error("Error loading user profile:", err);
+        setUser({
+          uid: supabaseUser.id,
+          id: supabaseUser.id,
+          email: supabaseUser.email,
+          displayName: supabaseUser.email?.split('@')[0] || 'Manager',
+        });
+      } finally {
+        setIsCheckingProfile(false);
+      }
+    };
+
+    // 1. Initial Session Check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      checkUserProfile(session?.user || null);
     });
-    return () => unsubscribe();
+
+    // 2. Realtime Auth State Listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      checkUserProfile(session?.user || null);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const fetchCurrentGameweek = async () => {
@@ -253,17 +270,39 @@ function App() {
   const handleSavePredictions = async () => {
     if (!gameWeekId || !user) return;
     try {
-      const userRef = doc(db, "users", user.uid);
-      // Use merge:true — safe to call without a prior getDoc.
-      // This preserves totalScore and any other existing fields automatically.
+      const userId = user.uid || user.id;
+
+      // 1. Save to Supabase PostgreSQL predictions table
+      if (currentRound) {
+        const rowsToUpsert = Object.entries(predictions)
+          .filter(([_, p]) => p && p.home !== '' && p.away !== '' && p.home !== undefined && p.away !== undefined)
+          .map(([matchId, p]) => ({
+            user_id: userId,
+            season: SEASON,
+            gameweek: parseInt(currentRound, 10),
+            match_id: String(matchId),
+            home_score: parseInt(String(p.home), 10),
+            away_score: parseInt(String(p.away), 10),
+            updated_at: new Date().toISOString(),
+          }));
+
+        if (rowsToUpsert.length > 0) {
+          await supabase.from('predictions').upsert(rowsToUpsert, {
+            onConflict: 'user_id,season,gameweek,match_id',
+          });
+        }
+      }
+
+      // 2. Compatibility mirror
+      const userRef = doc(db, "users", userId);
       await setDoc(userRef, { 
           name: user.displayName, 
-          id: user.uid,
-          totalScore: 0           // Only written if the field doesn't exist yet (merge)
+          id: userId,
+          totalScore: 0
       }, { merge: true });
-      await setDoc(doc(db, "gameweeks", gameWeekId, "predictions", user.uid), { scores: predictions, userName: user.displayName });
-      showToast('Saved', 'success');
-    } catch (e) {
+      await setDoc(doc(db, "gameweeks", gameWeekId, "predictions", userId), { scores: predictions, userName: user.displayName });
+      showToast('Predictions Saved!', 'success');
+    } catch (e: any) {
       console.error("Save error details:", e);
       showToast(`Error: ${e.message}`, 'error');
     }
@@ -276,8 +315,10 @@ function App() {
     setPredictions(newPredictions);
   };
 
-
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
 
   if ((isLoading && matches.length === 0) || isCheckingProfile) return (
     <div className="flex flex-col items-center w-full max-w-3xl mx-auto">
@@ -300,13 +341,7 @@ function App() {
       </div>
     </div>
   );
-  if (!user) return <AuthOverlay />;
-
-  // Enforce Email Confirmation Layer for email/password users
-  const isEmailUser = user.providerData.some(p => p.providerId === 'password');
-  if (isEmailUser && !user.emailVerified) {
-    return <AuthOverlay initialUser={user} onSuccess={() => window.location.reload()} />;
-  }
+  if (!user) return <AuthOverlay onSuccess={() => setIsCheckingProfile(true)} />;
 
   const renderMatchCards = () => {
     const predictedCount = matches.filter(m => {

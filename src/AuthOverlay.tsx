@@ -1,29 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { auth } from './firebase';
-import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signInWithPopup, 
-  GoogleAuthProvider,
-  sendPasswordResetEmail,
-  sendEmailVerification,
-  signOut,
-  User as FirebaseUser
-} from "firebase/auth";
+import { supabase } from './supabase';
 
 interface AuthOverlayProps {
-  initialUser?: FirebaseUser | null;
+  initialUser?: any;
   onSuccess?: () => void;
 }
 
 export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess }) => {
-  // If initialUser is provided and not verified, default to 'verify' mode
-  const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'verify'>(
-    initialUser && !initialUser.emailVerified ? 'verify' : 'login'
-  );
+  const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'verify'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
@@ -42,49 +30,43 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
   };
 
   const formatAuthError = (err: any, providerName: string) => {
-    if (err.code === 'auth/unauthorized-domain') {
-      return `This IP address (${window.location.hostname}) is not yet added to your Firebase Authorized Domains. You can either sign in with Email & Password below, or add ${window.location.hostname} in Firebase Console > Authentication > Settings > Authorized domains.`;
+    const msg = err?.message || '';
+    if (msg.toLowerCase().includes('invalid login credentials')) {
+      return 'Invalid email or password. Please check your credentials and try again.';
     }
-    if (err.code === 'auth/admin-restricted-operation' || err.code === 'auth/operation-not-allowed') {
-      return `${providerName} is not enabled in your Firebase Console. Go to Firebase Console > Authentication > Sign-in method to turn on Email/Password.`;
+    if (msg.toLowerCase().includes('user already registered')) {
+      return 'An account with this email already exists. Please sign in instead.';
     }
-    if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-      return 'Invalid email or password.';
+    if (msg.toLowerCase().includes('password should be at least')) {
+      return 'Password must be at least 6 characters long.';
     }
-    if (err.code === 'auth/email-already-in-use') {
-      return 'Email is already registered. Please sign in instead.';
+    if (msg.toLowerCase().includes('email not confirmed')) {
+      return 'Your email address is not verified yet. Please check your inbox for the confirmation link.';
     }
-    if (err.code === 'auth/weak-password') {
-      return 'Password is too weak. Please use at least 6 characters.';
-    }
-    if (err.code === 'auth/invalid-email') {
-      return 'Please enter a valid email address.';
-    }
-    if (err.code === 'auth/too-many-requests') {
-      return 'Too many attempts. Please try again in a few minutes.';
-    }
-    return err.message || `${providerName} failed.`;
+    return msg || `${providerName} failed.`;
   };
 
-  // 1. Google Auth (Google emails are pre-verified)
+  // 1. Google OAuth Sign-In (via Supabase)
   const handleGoogleLogin = async () => {
     setLoading(true);
     clearMessages();
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-      if (onSuccess) onSuccess();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
     } catch (err: any) {
       console.error(err);
-      if (err.code !== 'auth/popup-closed-by-user') {
-        setError(formatAuthError(err, 'Google Sign-In'));
-      }
+      setError(formatAuthError(err, 'Google Sign-In'));
     } finally {
       setLoading(false);
     }
   };
 
-  // 2. Email / Password Login with Verification Check
+  // 2. Email / Password Login
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
@@ -95,16 +77,15 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
     setLoading(true);
     clearMessages();
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
-      
-      // Check if email is verified
-      if (!userCredential.user.emailVerified) {
-        setMode('verify');
-        setInfoMessage('Please verify your email address to continue.');
-        return;
-      }
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error) throw error;
 
-      if (onSuccess) onSuccess();
+      if (data?.user) {
+        if (onSuccess) onSuccess();
+      }
     } catch (err: any) {
       console.error(err);
       setError(formatAuthError(err, 'Email Sign-In'));
@@ -113,7 +94,7 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
     }
   };
 
-  // 3. Email / Password Signup with Automatic Confirmation Link
+  // 3. Email / Password Signup
   const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password || !confirmPassword) {
@@ -132,15 +113,27 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
     setLoading(true);
     clearMessages();
     try {
-      // Create user
-      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      
-      // Immediately send verification link
-      await sendEmailVerification(userCredential.user);
-      
-      setMode('verify');
-      setResendCooldown(60);
-      setInfoMessage(`Verification link sent to ${email.trim()}! Please check your inbox (and spam folder).`);
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: displayName.trim() || email.trim().split('@')[0],
+          },
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
+
+      if (data.session) {
+        // Immediate login if email confirmation is turned off
+        setInfoMessage('Account created successfully! Loading dashboard...');
+        if (onSuccess) onSuccess();
+      } else {
+        setMode('verify');
+        setResendCooldown(60);
+        setInfoMessage(`Confirmation link sent to ${email.trim()}! Please check your inbox.`);
+      }
     } catch (err: any) {
       console.error(err);
       setError(formatAuthError(err, 'Email Sign-Up'));
@@ -151,18 +144,24 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
 
   // 4. Resend Verification Email
   const handleResendVerification = async () => {
-    const currentUser = auth.currentUser || initialUser;
-    if (!currentUser) {
-      setError('No user session found. Please sign in again.');
+    if (!email) {
+      setError('Please enter your email to resend confirmation.');
       return;
     }
 
     setLoading(true);
     clearMessages();
     try {
-      await sendEmailVerification(currentUser);
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim(),
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
       setResendCooldown(60);
-      setInfoMessage(`Fresh confirmation link sent to ${currentUser.email}!`);
+      setInfoMessage(`Fresh confirmation link sent to ${email.trim()}!`);
     } catch (err: any) {
       console.error(err);
       setError(formatAuthError(err, 'Resend Verification'));
@@ -171,35 +170,7 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
     }
   };
 
-  // 5. Check if user clicked the email link
-  const handleCheckVerification = async () => {
-    const currentUser = auth.currentUser || initialUser;
-    if (!currentUser) {
-      setError('Session expired. Please sign in again.');
-      setMode('login');
-      return;
-    }
-
-    setLoading(true);
-    clearMessages();
-    try {
-      await currentUser.reload();
-      if (currentUser.emailVerified) {
-        setInfoMessage('Email verified successfully! Loading your manager dashboard...');
-        if (onSuccess) onSuccess();
-        window.location.reload();
-      } else {
-        setError('Your email is not verified yet. Please click the link in the email we sent you, then click this button again.');
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError('Error verifying status: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 6. Password Reset Email
+  // 5. Password Reset Email
   const handlePasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) {
@@ -210,7 +181,10 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
     setLoading(true);
     clearMessages();
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
       setInfoMessage('Password reset link sent! Check your inbox.');
     } catch (err: any) {
       console.error(err);
@@ -221,12 +195,10 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({ initialUser, onSuccess
   };
 
   const handleSignOutFromVerify = async () => {
-    await signOut(auth);
+    await supabase.auth.signOut();
     setMode('login');
     clearMessages();
   };
-
-  const activeEmail = auth.currentUser?.email || initialUser?.email || email;
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white w-full">

@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import { db, auth } from './firebase';
-import { updateProfile } from "firebase/auth";
-import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { supabase } from './supabase';
 import './App.css';
 
 function ProfileSetup({ user, onComplete }) {
@@ -20,38 +18,43 @@ function ProfileSetup({ user, onComplete }) {
       
       setLoading(true);
       try {
-          // 0. Check for uniqueness
-          const q = query(collection(db, "users"), where("displayName", "==", managerName));
-          const querySnapshot = await getDocs(q);
+          const userId = user.uid || user.id;
+
+          // 0. Check uniqueness
+          const { data: existing } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('display_name', managerName.trim())
+            .neq('id', userId);
           
-          if (!querySnapshot.empty) {
-              // Ensure we don't block if the user is just updating their own profile (future-proofing)
-              const existingDoc = querySnapshot.docs[0];
-              if (existingDoc.id !== user.uid) {
-                  setError("This Manager Name is already taken! Please choose another.");
-                  setLoading(false);
-                  return;
-              }
+          if (existing && existing.length > 0) {
+              setError("This Manager Name is already taken! Please choose another.");
+              setLoading(false);
+              return;
           }
 
-          // 1. Save to Firestore
-          const userRef = doc(db, "users", user.uid);
-          await setDoc(userRef, {
-              displayName: managerName,
+          // 1. Save to Supabase profiles
+          await supabase
+            .from('profiles')
+            .upsert({
+              id: userId,
+              display_name: managerName.trim(),
               email: user.email,
-              photoURL: user.photoURL || '',
-              createdAt: new Date().toISOString()
-          }, { merge: true });
-          
-          // 2. Update Auth Profile
-          await updateProfile(user, { displayName: managerName });
+              total_score: 0,
+              updated_at: new Date().toISOString()
+            });
+
+          // 2. Update user metadata
+          await supabase.auth.updateUser({
+            data: { full_name: managerName.trim() }
+          });
 
           // 3. Notify App
           if (onComplete) onComplete();
           
-      } catch (e) {
+      } catch (e: any) {
           console.error(e);
-          setError("Failed to save profile. Try again. " + e.message);
+          setError("Failed to save profile. Try again: " + e.message);
           setLoading(false);
       }
   };
@@ -94,7 +97,7 @@ function ProfileSetup({ user, onComplete }) {
                 {loading ? 'Starting Season...' : 'Start Playing ⚽'}
             </button>
             <div className="divider"><span>OR</span></div>
-            <button type="button" onClick={() => auth.signOut()} className="auth-button google">
+            <button type="button" onClick={() => supabase.auth.signOut()} className="auth-button google">
                 Sign Out
             </button>
         </form>
