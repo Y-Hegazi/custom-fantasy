@@ -17,6 +17,9 @@ COPY . .
 # Run strict TypeScript verification and production bundle compilation
 RUN npm run typecheck && npm run build
 
+# Prune development dependencies to keep runtime image lightweight
+RUN npm prune --production
+
 # ==============================================================================
 # Stage 2: Minimal Secure Production Runtime
 # ==============================================================================
@@ -32,6 +35,9 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.js ./server.js
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
+
+# Ensure data directory exists with non-privileged user permissions
+RUN mkdir -p /app/data && chown -R node:node /app
 
 # Enterprise security: Run as non-privileged user
 USER node

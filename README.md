@@ -1,68 +1,84 @@
-# ⚽ Football Predictions App
+# ⚽ PredictionFantasy — Premier League Fantasy Predictions
 
-A modern, real-time football prediction platform where you can compete with friends in **Classic Leagues** (Points) or **Head-to-Head Battles**.
+A modern, real-time Premier League score prediction platform featuring live odds multipliers, private mini-leagues (Classic & Head-to-Head), Web Push deadline alerts, and automatic PostgreSQL data syncing.
 
-Built with **React**, **Vite**, and **Firebase**.
+Deployed live on Fly.io: [https://custom-fantasy-hegazi.fly.dev](https://custom-fantasy-hegazi.fly.dev)
 
-![Dashboard](screenshots/leagues.png)
+---
 
 ## ✨ Features
 
 ### ⚔️ Game Modes
-*   **Classic League**: Rank by total accumulation of points throughout the season.
-*   **Head-to-Head**: Weekly 1v1 matchups against other players in your league. Including:
-    *   **Round Robin Scheduling**: Automatically generates a fair season schedule for all players.
-    *   **Ghost Bot**: Automatically handles odd numbers of players by adding an "Average Bot" to the league.
-    *   **Live Matchups**: See who your opponent is directly on your dashboard.
+* **Classic Leagues**: Compete with friends based on total accumulated points throughout the season.
+* **Head-to-Head Leagues**: Weekly 1v1 duels with automated 38-gameweek round-robin scheduling.
+  * **Ghost Bot**: Automatically balances odd-numbered leagues with an Average Bot.
+  * **Matchup Cards**: Real-time live duel scorecards on dashboard and league view.
 
-### 📊 Predictions & Leaderboards
-*   **Live Scores**: Real-time updates during matches.
-*   **Auto-Save**: Predictions save automatically as you type.
-*   **Gameweek Leaderboard**: See who won the week with detailed score breakdowns.
-*   **Overall Leaderboard**: Track the season-long race for the title.
+### 🎯 Odds Multipliers & Scoring
+* **Accurate Result (+3 Pts)**: Guessing the exact final scoreline.
+* **Correct Outcome (+1 Pt)**: Guessing Win/Draw/Loss correctly.
+* **Underdog Multipliers**: Earn up to 3x multiplier points when accurately predicting underdog triumphs based on live match odds.
 
-![Predictions View](screenshots/predictions.png)
+### ⚡ Infrastructure & Realtime
+* **Supabase PostgreSQL**: Scalable relational database with Row Level Security (RLS) and real-time event streaming.
+* **Web Push Notifications**: Automatic 30-minute kickoff countdown alerts for unsubmitted predictions.
+* **Background Matchday Worker**: Automated live score updates cached via Football-Data.org API.
+* **Progressive Web App (PWA)**: Installable on iOS & Android with offline caching.
 
-### 🔒 Secure & Private
-*   **Google Auth**: Seamless sign-in.
-*   **Private Leagues**: Create leagues with a 6-character code to share with friends.
-*   **Admin Tools**: League admins can manage members and start H2H seasons.
+---
+
+## 🛠️ Tech Stack
+
+* **Frontend**: React 19, TypeScript, Tailwind CSS v4, Vite 7, React Router 7
+* **Backend / Database**: Supabase (PostgreSQL 15, Auth, RLS, Realtime)
+* **Server Runtime**: Node.js 20, Web Push (VAPID), Docker, Fly.io (Multi-region `fra`)
+* **Live Match Feed**: Football-Data.org API v4
+
+---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-*   Node.js (v14+)
-*   npm
+* Node.js (v20+)
+* npm (v10+)
+* Supabase Account & Project
 
-### Installation
+### Local Development Setup
 
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/your-username/football-predictions.git
-    cd football-predictions
-    ```
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/Y-Hegazi/custom-fantasy.git
+   cd custom-fantasy
+   ```
 
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
 
-3.  Set up Firebase:
-    *   Create a project in [Firebase Console](https://console.firebase.google.com/).
-    *   Enable **Authentication** (Google Provider).
-    *   Enable **Firestore Database**.
-    *   Create a `.env` file with your config (see `.env.example`).
+3. **Configure Environment Variables**:
+   Copy `.env.example` to `.env` and fill in your Supabase and API credentials:
+   ```bash
+   cp .env.example .env
+   ```
 
-4.  Run the development server:
-    ```bash
-    npm run dev
-    ```
+4. **Start Vite Dev Server**:
+   ```bash
+   npm run dev
+   ```
 
-## 🛠️ Tech Stack
-*   **Frontend**: React, Vite
-*   **Data**: Firebase Firestore (Real-time NoSQL)
-*   **Auth**: Firebase Auth
-*   **Styling**: Modern CSS3 (Dark Theme, Glassmorphism)
+5. **Typecheck & Production Build**:
+   ```bash
+   npm run typecheck
+   npm run build
+   ```
 
 ---
-*Created by Hegazi*
+
+## 📦 Deployment (Fly.io)
+
+Deploy directly using Fly CLI and Docker:
+
+```bash
+fly deploy --config fly.toml
+```

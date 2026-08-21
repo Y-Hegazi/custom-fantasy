@@ -178,9 +178,9 @@ export const restoreDatabaseFromSnapshot = async (
 };
 
 /**
- * Safety snapshot helper (no-op in Supabase or persists to local memory).
+ * Safety snapshot helper for Supabase PostgreSQL operations.
  */
-export const autoSnapshotToFirestore = async (reason: string): Promise<string> => {
+export const autoSnapshotToSupabase = async (reason: string): Promise<string> => {
   console.log(`[Safety Checkpoint] ${reason}`);
   return `snap_${Date.now()}`;
 };

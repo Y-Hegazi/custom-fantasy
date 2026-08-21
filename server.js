@@ -12,13 +12,14 @@ const PORT = process.env.PORT || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
 const API_KEY = process.env.FOOTBALL_DATA_ORG_KEY || process.env.VITE_FOOTBALL_DATA_ORG_KEY || '5e91154452994aaaaf8f501c5b97c9b2';
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://spyohjlqeisqybqpjbyb.supabase.co';
-const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_b3QUDgwI15MvcaLL9tsPfQ_zgc9KVXY';
-const SEASON = '2025';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_b3QUDgwI15MvcaLL9tsPfQ_zgc9KVXY';
+const SEASON = '2026';
 
 // --- Web Push VAPID Configuration ---
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BIZlWt2IVQPxmzXXAdCJD1CKtxBXdDOnA4bR3pnY7W5Cgs5VKakbcfzf0Ed9ygeuSF8IvyLAEqPbv7JZJqhYMVE';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'Y8ylOMcd4iXejb-PfG4gLwJZ4G8ycEcuVP9zPqPZ1LQ';
-const VAPID_EMAIL = 'mailto:yousefhegazi74@gmail.com';
+const VAPID_EMAIL = process.env.VAPID_EMAIL || 'mailto:yousefhegazi74@gmail.com';
 
 webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
@@ -250,8 +251,18 @@ const server = http.createServer(async (req, res) => {
   // Push Subscribe Endpoint
   if (pathname === '/api/push/subscribe' && req.method === 'POST') {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let tooLarge = false;
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 32768) { // 32 KB limit
+        tooLarge = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large' }));
+        req.destroy();
+      }
+    });
     req.on('end', () => {
+      if (tooLarge) return;
       try {
         const { userId, subscription } = JSON.parse(body);
         if (userId && subscription) {

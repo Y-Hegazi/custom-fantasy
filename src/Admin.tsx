@@ -4,7 +4,7 @@ import { processMatchUpdate } from './utils/dataUpdater';
 import { 
   downloadBackupJSON, 
   restoreDatabaseFromSnapshot, 
-  autoSnapshotToFirestore 
+  autoSnapshotToSupabase 
 } from './utils/backupManager';
 import { calculatePredictionPoints } from './utils/oddsEngine';
 import { supabase, isSupabaseConfigured } from './supabase';
@@ -977,7 +977,7 @@ function Admin() {
                   const backupData = JSON.parse(text);
 
                   setStatus('Creating pre-restore safety snapshot...');
-                  await autoSnapshotToFirestore('Pre-Restore Snapshot');
+                  await autoSnapshotToSupabase('Pre-Restore Snapshot');
 
                   setStatus('Restoring database collections...');
                   const result = await restoreDatabaseFromSnapshot(backupData, (msg) => setStatus(`[Restore] ${msg}`));
