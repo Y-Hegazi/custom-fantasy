@@ -278,6 +278,9 @@ function App() {
       checkUserProfile(session?.user || null);
     });
 
+    // 3. Detect active gameweek on load
+    fetchCurrentGameweek();
+
     return () => subscription.unsubscribe();
   }, []);
 
@@ -286,17 +289,38 @@ function App() {
     try {
       const { data } = await supabase
         .from('matches_cache')
-        .select('gameweek')
-        .order('gameweek', { ascending: false })
-        .limit(1);
+        .select('gameweek, matches')
+        .order('gameweek', { ascending: true });
 
-      if (data && data.length > 0 && data[0].gameweek) {
-        setCurrentRound(String(data[0].gameweek));
+      if (data && data.length > 0) {
+        const now = Date.now();
+        // 1. Prioritize live in-play gameweek
+        const liveGw = data.find(gwRow => 
+          Array.isArray(gwRow.matches) && gwRow.matches.some((m: any) => m.status === 'IN_PLAY' || m.status === 'PAUSED')
+        );
+        if (liveGw && liveGw.gameweek) {
+          setCurrentRound(String(liveGw.gameweek));
+          return;
+        }
+
+        // 2. Otherwise find the first upcoming gameweek with unplayed matches
+        const upcomingGw = data.find(gwRow =>
+          Array.isArray(gwRow.matches) && gwRow.matches.some((m: any) => 
+            m.status !== 'FINISHED' && m.status !== 'AWARDED'
+          )
+        );
+        if (upcomingGw && upcomingGw.gameweek) {
+          setCurrentRound(String(upcomingGw.gameweek));
+          return;
+        }
+
+        // 3. If all matches finished, select the latest gameweek
+        setCurrentRound(String(data[data.length - 1].gameweek));
       } else {
         setCurrentRound("1");
       }
     } catch (e) {
-      console.error(e);
+      console.error("Error detecting current gameweek:", e);
       setCurrentRound("1");
     } finally {
       setIsLoading(false);
