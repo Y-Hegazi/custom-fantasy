@@ -15,6 +15,9 @@ import RulesView from './RulesView';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { generateMatchOdds, isUnderdogOutcome, calculatePredictionPoints, UNDERDOG_ODDS_THRESHOLD } from './utils/oddsEngine';
 import { Match, PredictionsMap } from './types';
+import { ShareCardModal } from './ShareCardModal';
+import { computeManagerBadges } from './utils/badgeEngine';
+import { subscribeUserToPush, isPushSupported } from './utils/pushNotifications';
 
 import { SEASON, COMPETITION_CODE, API_BASE_URL, LOCKOUT_BUFFER_MS } from './config';
 const ADMIN_EMAILS = ["yousefhegazi74@gmail.com"];
@@ -35,13 +38,30 @@ function App() {
   const [currentLeague, setCurrentLeague] = useState(null);
   const [teamForms, setTeamForms] = useState({});
   const [announcement, setAnnouncement] = useState<{ message: string; active: boolean; type?: 'info' | 'warning' | 'success' } | null>(null);
-  const [dismissedAnnouncement, setDismissedAnnouncement] = useState<string | null>(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [pushStatus, setPushStatus] = useState<string>('idle');
 
   const [nowTime, setNowTime] = useState(Date.now());
 
   const showToast = (message, type = 'info') => {
     setToast({ message, visible: true, type });
     setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 3000);
+  };
+
+  const handleEnablePush = async () => {
+    if (!user) {
+      showToast('Please sign in first to enable push alerts.', 'error');
+      return;
+    }
+    setPushStatus('loading');
+    const success = await subscribeUserToPush(user.id || user.uid);
+    if (success) {
+      setPushStatus('subscribed');
+      showToast('🔔 Push alerts activated! We will notify you 30m before kickoff if you forget picks.', 'success');
+    } else {
+      setPushStatus('denied');
+      showToast('Push permission denied or not supported on this browser.', 'error');
+    }
   };
 
   // 30s Clock Ticker for Live Lockout Countdowns
@@ -216,6 +236,7 @@ function App() {
           email: supabaseUser.email,
           displayName: resolvedName || '',
           photoURL: supabaseUser.user_metadata?.avatar_url || '',
+          totalScore: profile?.total_score || 0,
         };
 
         setUser(userObj);
@@ -660,8 +681,36 @@ function App() {
     );
   };
 
+  // Compute Gameweek points & Badges for the logged in user
+  const gameweekPoints = Object.entries(predictions).reduce((acc, [mid, p]) => {
+    const match = matches.find(m => String(m.id) === String(mid));
+    if (match && match.status === 'FINISHED' && match.score?.fullTime?.home !== null && p && p.home !== '' && p.away !== '') {
+      const res = calculatePredictionPoints(
+        parseInt(p.home, 10),
+        parseInt(p.away, 10),
+        match.score.fullTime.home,
+        match.score.fullTime.away,
+        match.odds
+      );
+      return acc + res.totalPoints;
+    }
+    return acc;
+  }, 0);
+
+  const myPredictionsList = Object.entries(predictions).map(([mid, p]) => ({
+    match_id: mid,
+    home_score: p && p.home !== '' ? parseInt(p.home, 10) : null,
+    away_score: p && p.away !== '' ? parseInt(p.away, 10) : null
+  }));
+
+  const managerBadges = computeManagerBadges(
+    myPredictionsList,
+    matches,
+    user?.totalScore || 0
+  );
+
   return (
-    <div className="flex flex-col items-center w-full max-w-3xl mx-auto px-2">
+    <div className="flex flex-col items-center w-full max-w-3xl mx-auto px-2 pb-12">
       {/* 📢 Global Broadcast Announcement Banner */}
       {announcement && announcement.active && dismissedAnnouncement !== announcement.message && (
         <div className={`w-full mb-6 p-4 rounded-xl shadow-lg border flex items-center justify-between transition-all ${
@@ -689,7 +738,7 @@ function App() {
       )}
 
       {showOnboarding && <ProfileSetup user={user} onComplete={() => setShowOnboarding(false)} />}
-      <header className="w-full mb-8 border-b border-gray-700 pb-4">
+      <header className="w-full mb-6 border-b border-gray-700 pb-4">
         <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">PredictionFantasy</h1>
         <p className="text-xs text-gray-400 mt-1 mb-4">Premier League Predictions & Custom Leagues</p>
         
@@ -722,10 +771,54 @@ function App() {
             </div>
         )}
       </header>
-      <div className="flex justify-between items-center w-full mb-8 p-4 bg-[#2c2c2c] rounded-lg">
-        <span className="font-semibold text-lg">Welcome, {user.displayName}!</span>
-        <button onClick={handleLogout} className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-md transition-colors">Sign Out</button>
+
+      {/* User Status Bar with Viral Share Card & 30m Push Button */}
+      <div className="flex flex-wrap justify-between items-center w-full mb-6 p-4 bg-[#1e293b] rounded-xl border border-slate-700/80 gap-3 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-emerald-700/60 border border-emerald-500 flex items-center justify-center text-lg font-bold text-emerald-200">
+            {user.displayName?.[0]?.toUpperCase() || 'M'}
+          </div>
+          <div>
+            <div className="font-bold text-base text-white">{user.displayName}</div>
+            <div className="text-xs text-slate-400">Total: <span className="text-emerald-400 font-bold">{user.totalScore || 0} pts</span></div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Share Gameweek Card */}
+          <button
+            onClick={() => setIsShareModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs rounded-lg transition shadow"
+            title="Generate shareable score card"
+          >
+            <span>🏆</span>
+            <span>Share Card</span>
+          </button>
+
+          {/* 30-Min Kickoff Alert Push Button */}
+          <button
+            onClick={handleEnablePush}
+            disabled={pushStatus === 'subscribed'}
+            className={`flex items-center gap-1.5 px-3.5 py-2 font-bold text-xs rounded-lg transition shadow ${
+              pushStatus === 'subscribed'
+                ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 cursor-default'
+                : 'bg-blue-600 hover:bg-blue-500 text-white'
+            }`}
+            title="Notify 30 mins before kickoff if you haven't made predictions"
+          >
+            <span>🔔</span>
+            <span>{pushStatus === 'subscribed' ? 'Alerts ON' : '30m Alerts'}</span>
+          </button>
+
+          <button 
+            onClick={handleLogout} 
+            className="bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-800/80 font-bold py-2 px-3 text-xs rounded-lg transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
       </div>
+
       <div className={`toast ${toast.visible ? 'visible' : ''} ${toast.type}`}>
         {toast.message}
       </div>
@@ -816,6 +909,17 @@ function App() {
         <Route path="/admin" element={user && ADMIN_EMAILS.includes(user.email) ? <Admin /> : <div style={{padding:'20px', textAlign:'center'}}>Unauthorized</div>} />
         <Route path="*" element={<Navigate to="/predictions" replace />} />
       </Routes>
+
+      {/* Share Card Modal */}
+      <ShareCardModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        managerName={user?.displayName || 'Manager'}
+        gameweekNum={currentRound || 1}
+        gameweekPoints={gameweekPoints}
+        totalPoints={user?.totalScore || 0}
+        badges={managerBadges}
+      />
     </div>
   );
 }
