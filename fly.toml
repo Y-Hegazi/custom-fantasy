@@ -1,5 +1,5 @@
-# fly.toml app configuration file generated for custom-fantasy-app
-app = 'custom-fantasy-app'
+# fly.toml app configuration file
+app = 'custom-fantasy-hegazi'
 primary_region = 'fra'
 
 [build]
