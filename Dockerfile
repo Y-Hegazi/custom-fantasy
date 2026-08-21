@@ -27,10 +27,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Copy built assets and server runtime from builder
+# Copy built assets, dependencies, and server runtime from builder
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.js ./server.js
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/node_modules ./node_modules
 
 # Enterprise security: Run as non-privileged user
 USER node
