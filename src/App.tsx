@@ -64,6 +64,15 @@ function App() {
     }
   };
 
+  // Auto-redirect deep join links (e.g. /?join=PF-1234 -> /leagues?join=PF-1234)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const joinCode = params.get('join');
+    if (joinCode && location.pathname !== '/leagues') {
+      navigate(`/leagues?join=${encodeURIComponent(joinCode)}`);
+    }
+  }, [location.search, location.pathname, navigate]);
+
   // 30s Clock Ticker for Live Lockout Countdowns
   useEffect(() => {
     const timer = setInterval(() => setNowTime(Date.now()), 30000);
