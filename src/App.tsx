@@ -7,6 +7,7 @@ import Admin from './Admin';
 import ProfileSetup from './ProfileSetup';
 import LeaguesView from './LeaguesView';
 import H2HLeaderboard from './H2HLeaderboard';
+import { generateH2HFixtures } from './utils/h2hEngine';
 import { checkForAutoUpdate, tryTriggerLiveUpdate } from './utils/dataUpdater';
 import { getMatchGradient, getTeamColor } from './utils/teamColors';
 import TeamForm from './TeamForm';
@@ -378,17 +379,28 @@ function App() {
     const fetchOpponent = async () => {
       const userId = user?.uid || user?.id;
       setH2hOpponent(null);
-      if (!currentLeague || currentLeague.type !== 'h2h' || !currentRound || !currentLeague.fixtures || !userId) return;
+      if (!currentLeague || currentLeague.type !== 'h2h' || !currentRound || !userId) return;
 
-      const roundFixtures = currentLeague.fixtures[currentRound] || [];
-      const myMatch = roundFixtures.find((m: any) => m.player1 === userId || m.player2 === userId);
-      
-      if (myMatch) {
-        const oppId = myMatch.player1 === userId ? myMatch.player2 : myMatch.player1;
-        if (oppId === "AVERAGE") {
-          setH2hOpponent("👻 Average Bot");
-        } else {
-          try {
+      try {
+        let fixtures = currentLeague.fixtures;
+        if (!fixtures || Object.keys(fixtures).length === 0) {
+          const { data: memberRows } = await supabase
+            .from('league_members')
+            .select('user_id')
+            .eq('league_id', currentLeague.id);
+
+          const memberIds = (memberRows || []).map(r => r.user_id);
+          fixtures = generateH2HFixtures(memberIds);
+        }
+
+        const roundFixtures = fixtures[String(currentRound)] || fixtures[currentRound] || [];
+        const myMatch = roundFixtures.find((m: any) => m.player1 === userId || m.player2 === userId);
+
+        if (myMatch) {
+          const oppId = myMatch.player1 === userId ? myMatch.player2 : myMatch.player1;
+          if (oppId === "AVERAGE") {
+            setH2hOpponent("👻 Average Bot");
+          } else {
             const { data: oppProfile } = await supabase
               .from('profiles')
               .select('display_name')
@@ -396,12 +408,12 @@ function App() {
               .single();
 
             setH2hOpponent(oppProfile?.display_name || "Manager");
-          } catch {
-            setH2hOpponent("Manager");
           }
+        } else {
+          setH2hOpponent(null);
         }
-      } else {
-        setH2hOpponent("No Match");
+      } catch (e) {
+        console.error("Failed to compute H2H opponent:", e);
       }
     };
     fetchOpponent();
