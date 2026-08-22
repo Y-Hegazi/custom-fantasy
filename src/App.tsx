@@ -8,7 +8,7 @@ import ProfileSetup from './ProfileSetup';
 import LeaguesView from './LeaguesView';
 import H2HLeaderboard from './H2HLeaderboard';
 import { generateH2HFixtures } from './utils/h2hEngine';
-import { checkForAutoUpdate, tryTriggerLiveUpdate } from './utils/dataUpdater';
+import { checkForAutoUpdate, tryTriggerLiveUpdate, calculateAllTeamForms } from './utils/dataUpdater';
 import { getMatchGradient, getTeamColor } from './utils/teamColors';
 import TeamForm from './TeamForm';
 import { AuthOverlay } from './AuthOverlay';
@@ -114,7 +114,27 @@ function App() {
     };
   }, []);
 
-  // Bulletproof match loader: loads from Supabase cache & live proxy fallback
+  // Compute 5-game team forms dynamically from all cached gameweeks
+  useEffect(() => {
+    const fetchTeamForms = async () => {
+      try {
+        const { data: cacheRows } = await supabase
+          .from('matches_cache')
+          .select('matches')
+          .like('id', `${SEASON}_week_%`);
+
+        if (cacheRows && cacheRows.length > 0) {
+          const allMatches = cacheRows.flatMap(row => row.matches || []);
+          const forms = calculateAllTeamForms(allMatches);
+          setTeamForms(forms);
+        }
+      } catch (err) {
+        console.warn('Failed to compute team forms:', err);
+      }
+    };
+
+    fetchTeamForms();
+  }, [currentRound, matches]);
   useEffect(() => {
     const roundToLoad = currentRound || "1";
     let isCancelled = false;
@@ -124,71 +144,82 @@ function App() {
       setApiError('');
 
       try {
-        // 1. Try Supabase matches_cache first
+        // 1. Load Supabase matches_cache for immediate display
         const { data: cacheRow } = await supabase
           .from('matches_cache')
           .select('matches')
           .eq('id', `${SEASON}_week_${roundToLoad}`)
           .single();
 
+        let needsFreshFetch = true;
+
         if (!isCancelled && cacheRow?.matches && cacheRow.matches.length > 0) {
           setMatches(cacheRow.matches);
           setIsLoading(false);
-          return;
+
+          // Check if all matches in this gameweek are already finished (no need to refetch repeatedly)
+          const allFinished = cacheRow.matches.every((m: any) => m.status === 'FINISHED');
+          const hasPastOrLive = cacheRow.matches.some((m: any) => m.timestamp <= Date.now() || m.status === 'IN_PLAY' || m.status === 'PAUSED');
+
+          if (allFinished && !hasPastOrLive) {
+            needsFreshFetch = false;
+          }
         }
 
-        // 2. Direct API Proxy Fallback (Works on any device & unauthenticated)
-        const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${roundToLoad}`;
-        const response = await fetch(proxyUrl);
-        const data = await response.json();
+        // 2. Fetch fresh live & final scores from API Proxy
+        if (needsFreshFetch) {
+          const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${roundToLoad}`;
+          const response = await fetch(proxyUrl);
+          const data = await response.json();
 
-        if (data?.matches && data.matches.length > 0) {
-          const formattedMatches = data.matches.map((match: any) => ({
-            id: String(match.id),
-            homeTeam: match.homeTeam?.name || 'Home',
-            awayTeam: match.awayTeam?.name || 'Away',
-            homeLogo: match.homeTeam?.crest || '',
-            awayLogo: match.awayTeam?.crest || '',
-            date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-            timestamp: new Date(match.utcDate).getTime(),
-            status: match.status,
-            odds: generateMatchOdds(match.homeTeam?.name || '', match.awayTeam?.name || '', String(match.id)),
-            score: {
-              fullTime: {
-                home: match.score?.fullTime?.home,
-                away: match.score?.fullTime?.away
+          if (data?.matches && data.matches.length > 0) {
+            const formattedMatches = data.matches.map((match: any) => ({
+              id: String(match.id),
+              homeTeam: match.homeTeam?.name || 'Home',
+              awayTeam: match.awayTeam?.name || 'Away',
+              homeLogo: match.homeTeam?.crest || '',
+              awayLogo: match.awayTeam?.crest || '',
+              date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+              timestamp: new Date(match.utcDate).getTime(),
+              status: match.status,
+              minute: match.minute || (match.status === 'PAUSED' ? 'HT' : (match.status === 'IN_PLAY' ? 'LIVE' : null)),
+              odds: generateMatchOdds(match.homeTeam?.name || '', match.awayTeam?.name || '', String(match.id)),
+              score: {
+                fullTime: {
+                  home: match.score?.fullTime?.home ?? null,
+                  away: match.score?.fullTime?.away ?? null
+                }
               }
+            })).sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+            if (!isCancelled) {
+              setMatches(formattedMatches);
+              setIsLoading(false);
             }
-          })).sort((a: any, b: any) => a.timestamp - b.timestamp);
 
-          if (!isCancelled) {
-            setMatches(formattedMatches);
-            setIsLoading(false);
+            // Cache updated scores in Supabase
+            try {
+              await supabase.from('matches_cache').upsert({
+                id: `${SEASON}_week_${roundToLoad}`,
+                season: SEASON,
+                gameweek: parseInt(roundToLoad, 10),
+                matches: formattedMatches,
+                last_updated: new Date().toISOString()
+              });
+            } catch (e) {
+              // Non-blocking
+            }
+            return;
           }
-
-          // Cache in Supabase if session active
-          try {
-            await supabase.from('matches_cache').upsert({
-              id: `${SEASON}_week_${roundToLoad}`,
-              season: SEASON,
-              gameweek: parseInt(roundToLoad, 10),
-              matches: formattedMatches,
-              last_updated: new Date().toISOString()
-            });
-          } catch (e) {
-            // Non-blocking
-          }
-          return;
         }
 
-        if (!isCancelled) {
+        if (!isCancelled && (!cacheRow?.matches || cacheRow.matches.length === 0)) {
           setApiError('No match fixtures found for this gameweek.');
           setIsLoading(false);
         }
       } catch (err: any) {
         console.error("Match loading error:", err);
         if (!isCancelled) {
-          setApiError('Error loading match data. Retrying...');
           setIsLoading(false);
         }
       }
@@ -616,108 +647,175 @@ function App() {
                 }
               }
 
-              return (
-              <div 
-                key={match.id} 
-                className={`match-card ${isLocked ? 'locked' : ''} ${isLive ? 'live-view' : ''}`}
-                style={gradientStyle}
-              >
-                <div className="match-info flex items-center justify-between">
-                  <span className="text-xs text-gray-300 font-medium">{match.date}</span>
-                  <div className="flex items-center gap-1.5">
-                    {isFinished ? (
-                      <span className="status-badge finished">FT</span>
-                    ) : isLive ? (
-                      <span className="status-badge live flex items-center gap-1 font-bold">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span> LIVE
+              // Calculate user prediction result vs actual score
+              const actualHome = match.score?.fullTime?.home;
+              const actualAway = match.score?.fullTime?.away;
+              const hasActualScore = actualHome !== null && actualHome !== undefined && actualAway !== null && actualAway !== undefined;
+
+              let matchResultBadge = null;
+              if (hasActualScore && (isFinished || isLive)) {
+                const aH = Number(actualHome);
+                const aA = Number(actualAway);
+                if (hasPred) {
+                  const pH = Number(predHome);
+                  const pA = Number(predAway);
+                  const scoreRes = calculatePredictionPoints(pH, pA, aH, aA, odds);
+                  const pts = scoreRes.totalPoints;
+                  const isExact = (pH === aH && pA === aA);
+                  const isOutcome = ((pH > pA && aH > aA) || (pH < pA && aH < aA) || (pH === pA && aH === aA));
+
+                  if (isExact) {
+                    matchResultBadge = (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-emerald-500/25 text-emerald-300 border border-emerald-500/50 shadow-sm">
+                        🎯 Exact Score (+{pts} pts)
                       </span>
-                    ) : isLocked ? (
-                      <span className="status-badge locked-badge">🔒 Locked (5m pre-KO)</span>
+                    );
+                  } else if (isOutcome) {
+                    matchResultBadge = (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-500/25 text-blue-300 border border-blue-500/50 shadow-sm">
+                        ⚡ Correct Result (+{pts} pt{pts > 1 ? 's' : ''})
+                      </span>
+                    );
+                  } else {
+                    matchResultBadge = (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800/90 text-gray-400 border border-gray-700">
+                        ❌ Incorrect (0 pts)
+                      </span>
+                    );
+                  }
+                } else {
+                  matchResultBadge = (
+                    <span className="text-[11px] text-gray-400 italic">No pick submitted (0 pts)</span>
+                  );
+                }
+              }
+
+                return (
+                <div 
+                  key={match.id} 
+                  className={`match-card ${isLocked ? 'locked' : ''} ${isLive ? 'live-view' : ''}`}
+                  style={gradientStyle}
+                >
+                  <div className="match-info flex items-center justify-between">
+                    <span className="text-xs text-gray-300 font-medium">{match.date}</span>
+                    <div className="flex items-center gap-1.5">
+                      {isFinished ? (
+                        <span className="status-badge finished">FT</span>
+                      ) : isLive ? (
+                        <span className="status-badge live flex items-center gap-1 font-bold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span> LIVE
+                        </span>
+                      ) : isLocked ? (
+                        <span className="status-badge locked-badge">🔒 Locked (5m pre-KO)</span>
+                      ) : (
+                        (() => {
+                          const diff = matchDeadline - nowTime;
+                          const hours = Math.floor(diff / (1000 * 60 * 60));
+                          const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                          const days = Math.floor(hours / 24);
+                          if (hours < 1) {
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-sm animate-pulse">⏳ Locks in {Math.max(1, minutes)}m</span>;
+                          }
+                          if (hours < 24) {
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-900/60 text-blue-300 border border-blue-500/40">⏳ Locks in {hours}h {minutes}m</span>;
+                          }
+                          return <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-gray-800/80 text-gray-400 border border-gray-700">📅 Opens ({days}d left)</span>;
+                        })()
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="prediction-row">
+                    <div className="team-container home">
+                      <img src={match.homeLogo} alt={match.homeTeam} className="team-logo" />
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'flex-end', marginRight:'10px'}}>
+                          <span className="team-name">{match.homeTeam}</span>
+                          <TeamForm formString={teamForms[match.homeTeam]} />
+                      </div>
+                      <input 
+                        type="number" 
+                        min="0" 
+                        className="score-input" 
+                        value={predictions[match.id]?.home || ''} 
+                        onChange={(e) => handleScoreChange(match.id, 'home', e.target.value)}
+                        onBlur={() => handleSavePredictions()}
+                        disabled={isLocked}
+                      />
+                    </div>
+
+                    <div className="vs-separator">-</div>
+                    
+                    <div className="team-container away">
+                      <input 
+                        type="number" 
+                        min="0" 
+                        className="score-input" 
+                        value={predictions[match.id]?.away || ''} 
+                        onChange={(e) => handleScoreChange(match.id, 'away', e.target.value)}
+                        onBlur={() => handleSavePredictions()}
+                        disabled={isLocked}
+                      />
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'flex-start', marginLeft:'10px'}}>
+                          <span className="team-name">{match.awayTeam}</span>
+                          <TeamForm formString={teamForms[match.awayTeam]} />
+                      </div>
+                      <img src={match.awayLogo} alt={match.awayTeam} className="team-logo" />
+                    </div>
+                  </div>
+
+                  {/* --- DEDICATED ACTUAL MATCH SCORE & TIMING BANNER --- */}
+                  <div className="mt-3 px-3 py-2 rounded-xl bg-gray-950/85 border border-gray-700/60 flex flex-wrap items-center justify-between gap-2 shadow-inner">
+                    {isFinished && hasActualScore ? (
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-gray-800 text-emerald-400 font-extrabold text-[11px] tracking-wider uppercase border border-gray-700">
+                          Final Score
+                        </span>
+                        <span className="text-sm sm:text-base font-black text-white tracking-wide">
+                          {match.homeTeam.split(' ')[0]} <span className="text-emerald-400 text-lg mx-1 font-black">{actualHome} - {actualAway}</span> {match.awayTeam.split(' ')[0]}
+                        </span>
+                      </div>
+                    ) : isLive && hasActualScore ? (
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-red-600 text-white font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-1.5 shadow-sm animate-pulse">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                          {match.minute || 'LIVE'}
+                        </span>
+                        <span className="text-sm sm:text-base font-black text-white tracking-wide">
+                          {match.homeTeam.split(' ')[0]} <span className="text-red-400 text-lg mx-1 font-black">{actualHome} - {actualAway}</span> {match.awayTeam.split(' ')[0]}
+                        </span>
+                      </div>
                     ) : (
-                      (() => {
-                        const diff = matchDeadline - nowTime;
-                        const hours = Math.floor(diff / (1000 * 60 * 60));
-                        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-                        const days = Math.floor(hours / 24);
-                        if (hours < 1) {
-                          return <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-sm animate-pulse">⏳ Locks in {Math.max(1, minutes)}m</span>;
-                        }
-                        if (hours < 24) {
-                          return <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-900/60 text-blue-300 border border-blue-500/40">⏳ Locks in {hours}h {minutes}m</span>;
-                        }
-                        return <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-gray-800/80 text-gray-400 border border-gray-700">📅 Opens ({days}d left)</span>;
-                      })()
+                      <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                        <span className="text-gray-500 font-medium">Kickoff:</span>
+                        <strong className="text-gray-200">{match.date}</strong>
+                      </div>
                     )}
+
+                    <div className="flex items-center gap-1.5">
+                      {matchResultBadge}
+                    </div>
+                  </div>
+
+                  {/* --- ODDS & BONUS BAR --- */}
+                  <div className="flex flex-wrap items-center justify-between mt-2.5 pt-2 border-t border-gray-800/80 text-xs gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5 text-gray-400">
+                      <span className="text-[11px] uppercase font-bold text-gray-400 mr-0.5">Odds:</span>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.home >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
+                        {match.homeTeam.split(' ')[0]} Win: <strong>{odds.home.toFixed(2)}</strong>{odds.home >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.draw >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
+                        Draw: <strong>{odds.draw.toFixed(2)}</strong>{odds.draw >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.away >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
+                        {match.awayTeam.split(' ')[0]} Win: <strong>{odds.away.toFixed(2)}</strong>{odds.away >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
+                      </span>
+                    </div>
+
+                    <div>
+                      {multiplierBadge}
+                    </div>
                   </div>
                 </div>
-
-                <div className="prediction-row">
-                  <div className="team-container home">
-                    <img src={match.homeLogo} alt={match.homeTeam} className="team-logo" />
-                    <div style={{display:'flex', flexDirection:'column', alignItems:'flex-end', marginRight:'10px'}}>
-                        <span className="team-name">{match.homeTeam}</span>
-                        <TeamForm formString={teamForms[match.homeTeam]} />
-                    </div>
-                    <input 
-                      type="number" 
-                      min="0" 
-                      className="score-input" 
-                      value={predictions[match.id]?.home || ''} 
-                      onChange={(e) => handleScoreChange(match.id, 'home', e.target.value)}
-                      onBlur={() => handleSavePredictions()}
-                      disabled={isLocked}
-                    />
-                  </div>
-
-                  <div className="vs-separator">-</div>
-                  
-                  <div className="team-container away">
-                    <input 
-                      type="number" 
-                      min="0" 
-                      className="score-input" 
-                      value={predictions[match.id]?.away || ''} 
-                      onChange={(e) => handleScoreChange(match.id, 'away', e.target.value)}
-                      onBlur={() => handleSavePredictions()}
-                      disabled={isLocked}
-                    />
-                    <div style={{display:'flex', flexDirection:'column', alignItems:'flex-start', marginLeft:'10px'}}>
-                        <span className="team-name">{match.awayTeam}</span>
-                        <TeamForm formString={teamForms[match.awayTeam]} />
-                    </div>
-                    <img src={match.awayLogo} alt={match.awayTeam} className="team-logo" />
-                  </div>
-                </div>
-
-                {/* --- ODDS & BONUS BAR --- */}
-                <div className="flex flex-wrap items-center justify-between mt-3 pt-2.5 border-t border-gray-700/60 text-xs gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5 text-gray-400">
-                    <span className="text-[11px] uppercase font-bold text-gray-400 mr-0.5">Odds:</span>
-                    <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.home >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
-                      {match.homeTeam.split(' ')[0]} Win: <strong>{odds.home.toFixed(2)}</strong>{odds.home >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.draw >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
-                      Draw: <strong>{odds.draw.toFixed(2)}</strong>{odds.draw >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[11px] font-semibold bg-gray-900/90 border ${odds.away >= UNDERDOG_ODDS_THRESHOLD ? 'border-purple-500 text-purple-300 shadow-sm' : 'border-gray-700 text-gray-300'}`}>
-                      {match.awayTeam.split(' ')[0]} Win: <strong>{odds.away.toFixed(2)}</strong>{odds.away >= UNDERDOG_ODDS_THRESHOLD ? ' ⚡2x' : ''}
-                    </span>
-                  </div>
-
-                  <div>
-                    {multiplierBadge}
-                  </div>
-                </div>
-
-                {(isLive || isFinished || (match.score?.fullTime?.home != null)) && match.score?.fullTime?.home !== null && (
-                    <div className="real-score-display">
-                        <span className="actual-score">{match.score.fullTime.home}</span>
-                        <span className="score-divider">-</span>
-                        <span className="actual-score">{match.score.fullTime.away}</span>
-                        {isLive && <span className="live-indicator">LIVE</span>}
-                    </div>
-                )}
-              </div>
               );
             })}
           </div>

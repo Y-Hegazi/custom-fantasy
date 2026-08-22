@@ -1,6 +1,47 @@
 import { supabase } from '../supabase';
 import { SEASON, COMPETITION_CODE, API_BASE_URL } from '../config';
 import { generateMatchOdds } from './oddsEngine';
+import { settleGameweekScores } from './scoringEngine';
+
+/**
+ * Calculates 5-match form string (e.g. "WWDLW") for every team across all finished matches.
+ */
+export const calculateAllTeamForms = (allMatches: any[]): Record<string, string> => {
+  const teamHistory: Record<string, Array<{ timestamp: number; result: 'W' | 'D' | 'L' }>> = {};
+
+  (allMatches || []).forEach((m: any) => {
+    if (m.status === 'FINISHED' && m.score?.fullTime?.home !== null && m.score?.fullTime?.away !== null) {
+      const hTeam = typeof m.homeTeam === 'string' ? m.homeTeam : m.homeTeam?.name;
+      const aTeam = typeof m.awayTeam === 'string' ? m.awayTeam : m.awayTeam?.name;
+      const hScore = Number(m.score.fullTime.home);
+      const aScore = Number(m.score.fullTime.away);
+      const ts = m.timestamp || (m.utcDate ? new Date(m.utcDate).getTime() : 0);
+
+      if (hTeam && aTeam && !isNaN(hScore) && !isNaN(aScore)) {
+        if (!teamHistory[hTeam]) teamHistory[hTeam] = [];
+        if (!teamHistory[aTeam]) teamHistory[aTeam] = [];
+
+        if (hScore > aScore) {
+          teamHistory[hTeam].push({ timestamp: ts, result: 'W' });
+          teamHistory[aTeam].push({ timestamp: ts, result: 'L' });
+        } else if (hScore < aScore) {
+          teamHistory[hTeam].push({ timestamp: ts, result: 'L' });
+          teamHistory[aTeam].push({ timestamp: ts, result: 'W' });
+        } else {
+          teamHistory[hTeam].push({ timestamp: ts, result: 'D' });
+          teamHistory[aTeam].push({ timestamp: ts, result: 'D' });
+        }
+      }
+    }
+  });
+
+  const forms: Record<string, string> = {};
+  for (const [team, matches] of Object.entries(teamHistory)) {
+    const sorted = matches.sort((a, b) => a.timestamp - b.timestamp);
+    forms[team] = sorted.slice(-5).map(m => m.result).join('');
+  }
+  return forms;
+};
 
 export const processMatchUpdate = async (setStatusCallback: (msg: string) => void) => {
     setStatusCallback('Fetching data from Premier League API proxy...');
@@ -13,9 +54,16 @@ export const processMatchUpdate = async (setStatusCallback: (msg: string) => voi
     setStatusCallback(`Fetched ${data.matches.length} matches. Grouping by gameweek...`);
 
     const matchesByGameweek: Record<number, any[]> = {};
+    const gameweeksWithFinishedMatches = new Set<number>();
+
     data.matches.forEach((match: any) => {
         const gw = match.matchday;
+        if (!gw) return;
         if (!matchesByGameweek[gw]) matchesByGameweek[gw] = [];
+
+        if (match.status === 'FINISHED') {
+          gameweeksWithFinishedMatches.add(gw);
+        }
         
         matchesByGameweek[gw].push({
              id: String(match.id),
@@ -29,8 +77,8 @@ export const processMatchUpdate = async (setStatusCallback: (msg: string) => voi
              odds: generateMatchOdds(match.homeTeam.name, match.awayTeam.name, String(match.id)),
              score: {
                  fullTime: {
-                     home: match.score.fullTime.home,
-                     away: match.score.fullTime.away
+                     home: match.score?.fullTime?.home ?? null,
+                     away: match.score?.fullTime?.away ?? null
                  }
              }
         });
@@ -56,10 +104,22 @@ export const processMatchUpdate = async (setStatusCallback: (msg: string) => voi
 
     if (upsertErr) throw upsertErr;
 
+    // Settle prediction scores for gameweeks that have completed matches
+    if (gameweeksWithFinishedMatches.size > 0) {
+      setStatusCallback(`Settling prediction scores for ${gameweeksWithFinishedMatches.size} gameweeks...`);
+      for (const gw of gameweeksWithFinishedMatches) {
+        try {
+          await settleGameweekScores(gw, SEASON);
+        } catch (sErr: any) {
+          console.warn(`[Auto-Settle Note GW${gw}]:`, sErr.message);
+        }
+      }
+    }
+
     // Detect Current Gameweek
     const sortedAll = [...data.matches].sort((a: any, b: any) => new Date(a.utcDate).getTime() - new Date(b.utcDate).getTime());
     let nextMatchday = 1;
-    const upcomingMatch = sortedAll.find((m: any) => m.status === 'TIMED' || m.status === 'SCHEDULED');
+    const upcomingMatch = sortedAll.find((m: any) => m.status === 'TIMED' || m.status === 'SCHEDULED' || m.status === 'IN_PLAY');
     
     if (upcomingMatch) {
          nextMatchday = upcomingMatch.matchday;
@@ -67,7 +127,7 @@ export const processMatchUpdate = async (setStatusCallback: (msg: string) => voi
          nextMatchday = 38; 
     }
 
-    setStatusCallback(`✅ Success! Synced ${upsertRows.length} gameweeks to PostgreSQL. Current: GW ${nextMatchday}`);
+    setStatusCallback(`✅ Success! Synced ${upsertRows.length} gameweeks and settled active scores. Current: GW ${nextMatchday}`);
     return nextMatchday;
 };
 

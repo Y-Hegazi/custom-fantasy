@@ -124,7 +124,23 @@ async function syncLiveMatches() {
       const gw = m.matchday;
       if (!gw) return;
       if (!byGameweek[gw]) byGameweek[gw] = [];
-      byGameweek[gw].push(m);
+      byGameweek[gw].push({
+        id: String(m.id),
+        homeTeam: m.homeTeam?.name || 'Home',
+        awayTeam: m.awayTeam?.name || 'Away',
+        homeLogo: m.homeTeam?.crest || '',
+        awayLogo: m.awayTeam?.crest || '',
+        date: new Date(m.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+        timestamp: new Date(m.utcDate).getTime(),
+        status: m.status,
+        minute: m.minute || (m.status === 'PAUSED' ? 'HT' : (m.status === 'IN_PLAY' ? 'LIVE' : null)),
+        score: {
+          fullTime: {
+            home: m.score?.fullTime?.home ?? null,
+            away: m.score?.fullTime?.away ?? null
+          }
+        }
+      });
     });
 
     // Update active/recent gameweeks in Supabase matches_cache
