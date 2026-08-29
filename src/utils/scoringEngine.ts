@@ -98,14 +98,15 @@ export async function settleGameweekScores(gameweek: number, season: string = '2
   let topScorer: { name: string; points: number } | null = null;
 
   for (const uid of userIds) {
-    // Sum all points for this user across the entire season
+    // Sum ALL scored predictions for this user across the ENTIRE season
     const { data: allUserPreds } = await supabase
       .from('predictions')
       .select('points')
       .eq('user_id', uid)
-      .eq('season', season);
+      .eq('season', season)
+      .not('points', 'is', null); // Only count scored predictions
 
-    const totalSeasonPoints = (allUserPreds || []).reduce((acc, p) => acc + (p.points || 0), 0);
+    const totalSeasonPoints = (allUserPreds || []).reduce((acc, p) => acc + (Number(p.points) || 0), 0);
 
     const { data: updatedProfile } = await supabase
       .from('profiles')
@@ -130,4 +131,37 @@ export async function settleGameweekScores(gameweek: number, season: string = '2
     totalUsersUpdated: userIds.length,
     topScorer
   };
+}
+
+/**
+ * Full season re-settlement: recalculates total_score for ALL users
+ * across all gameweeks. Use this to fix stale leaderboard standings.
+ */
+export async function recalculateAllUserTotals(season: string = '2026'): Promise<{ usersUpdated: number }> {
+  // 1. Get all users who have any predictions this season
+  const { data: allPreds } = await supabase
+    .from('predictions')
+    .select('user_id, points')
+    .eq('season', season);
+
+  if (!allPreds || allPreds.length === 0) return { usersUpdated: 0 };
+
+  // 2. Group by user
+  const userTotals: Record<string, number> = {};
+  allPreds.forEach(p => {
+    if (!userTotals[p.user_id]) userTotals[p.user_id] = 0;
+    userTotals[p.user_id] += Number(p.points) || 0;
+  });
+
+  // 3. Update all profiles
+  let count = 0;
+  for (const [uid, total] of Object.entries(userTotals)) {
+    await supabase
+      .from('profiles')
+      .update({ total_score: total, updated_at: new Date().toISOString() })
+      .eq('id', uid);
+    count++;
+  }
+
+  return { usersUpdated: count };
 }

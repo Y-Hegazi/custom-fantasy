@@ -8,7 +8,7 @@ import {
 } from './utils/backupManager';
 import { calculatePredictionPoints } from './utils/oddsEngine';
 import { supabase, isSupabaseConfigured } from './supabase';
-import { settleGameweekScores } from './utils/scoringEngine';
+import { settleGameweekScores, recalculateAllUserTotals } from './utils/scoringEngine';
 
 function Admin() {
   const [status, setStatus] = useState('');
@@ -429,7 +429,7 @@ function Admin() {
     if (!confirm("⚠️ This will recalculate ALL user scores across all gameweeks based on PostgreSQL cached results. Continue?")) return;
     
     setIsLoading(true);
-    setStatus("Starting recalculation with Supabase scoring engine...");
+    setStatus("Step 1/2: Settling all gameweek predictions...");
     
     try {
       let totalScored = 0;
@@ -442,10 +442,27 @@ function Admin() {
         }
       }
 
-      setStatus(`✅ Recalculation Complete! Recalculated ${totalScored} predictions.`);
+      setStatus(`Step 2/2: Re-aggregating overall standings for all users...`);
+      const { usersUpdated } = await recalculateAllUserTotals(SEASON);
+
+      setStatus(`✅ Recalculation Complete! Scored ${totalScored} predictions, updated ${usersUpdated} manager totals.`);
       await loadUsers();
     } catch (e: any) {
       setStatus("❌ Recalculation Failed: " + e.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fixOverallStandings = async () => {
+    setIsLoading(true);
+    setStatus("Rebuilding overall standings from all scored predictions...");
+    try {
+      const { usersUpdated } = await recalculateAllUserTotals(SEASON);
+      setStatus(`✅ Overall standings fixed! Updated totals for ${usersUpdated} managers.`);
+      await loadUsers();
+    } catch (e: any) {
+      setStatus("❌ Failed: " + e.message);
     } finally {
       setIsLoading(false);
     }
@@ -1008,6 +1025,14 @@ function Admin() {
       <div className="p-5 bg-red-950/30 rounded-xl border border-red-800/60 shadow-md space-y-3">
         <h3 className="text-sm font-bold text-red-400 uppercase tracking-wider">☢️ Danger Zone</h3>
         
+        <button
+          onClick={fixOverallStandings}
+          disabled={isLoading}
+          className="w-full py-2.5 bg-blue-900 hover:bg-blue-800 text-blue-100 font-bold text-xs rounded-lg border border-blue-700 transition"
+        >
+          🏆 Fix Overall Standings (Re-aggregate All Totals)
+        </button>
+
         <button
           onClick={recalculateScores}
           disabled={isLoading}
