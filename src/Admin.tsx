@@ -407,9 +407,17 @@ function Admin() {
 
       if (error) throw error;
 
+      // Automatically recalculate and settle user points for this gameweek
+      try {
+        await settleGameweekScores(parseInt(correctionGW, 10), SEASON);
+        await loadUsers();
+      } catch (sErr: any) {
+        console.warn('Auto settle note:', sErr.message);
+      }
+
       setCorrectionMatches(updatedMatches);
       setEditingMatch(null);
-      setStatus(`✅ Score updated and saved to PostgreSQL for match ${matchId}`);
+      setStatus(`✅ Score updated and leaderboard points recalculated for match ${matchId}!`);
     } catch (e: any) {
       setStatus(`❌ Error: ${e.message}`);
     } finally {
