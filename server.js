@@ -97,93 +97,110 @@ async function supabaseRest(endpoint, method = 'GET', body = null) {
   return res.json();
 }
 
-// --- BACKGROUND WORKER 1: LIVE MATCHDAY SYNC ---
-let hasLiveMatchesActive = false;
+// --- IN-MEMORY RATE-LIMIT PROTECTED MATCH CACHE (Max 1 upstream fetch per 45s) ---
+let inMemoryMatchData = null;
+let lastUpstreamFetchTime = 0;
+let ongoingFetchPromise = null;
+const CACHE_TTL_MS = 45 * 1000;
 
-async function syncLiveMatches() {
-  if (!API_KEY) return;
-  try {
-    const upstreamRes = await fetch(`https://api.football-data.org/v4/competitions/PL/matches?_t=${Date.now()}`, {
-      cache: 'no-store',
-      headers: {
-        'X-Auth-Token': API_KEY,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache'
-      }
-    });
+async function getOrFetchUpstreamMatches(force = false) {
+  const now = Date.now();
+  if (inMemoryMatchData && !force && (now - lastUpstreamFetchTime < CACHE_TTL_MS)) {
+    return inMemoryMatchData;
+  }
 
-    if (!upstreamRes.ok) {
-      console.warn(`[Match Sync] Upstream API returned status ${upstreamRes.status}`);
-      return;
-    }
+  if (ongoingFetchPromise) {
+    return ongoingFetchPromise;
+  }
 
-    const data = await upstreamRes.json();
-    const matches = data.matches || [];
-    if (matches.length === 0) return;
-
-    let anyLiveFound = false;
-
-    // Group matches by gameweek (matchday)
-    const byGameweek = {};
-    matches.forEach(m => {
-      const gw = m.matchday;
-      if (!gw) return;
-      if (!byGameweek[gw]) byGameweek[gw] = [];
-
-      if (m.status === 'IN_PLAY' || m.status === 'PAUSED') {
-        anyLiveFound = true;
-      }
-
-      byGameweek[gw].push({
-        id: String(m.id),
-        homeTeam: m.homeTeam?.name || 'Home',
-        awayTeam: m.awayTeam?.name || 'Away',
-        homeLogo: m.homeTeam?.crest || '',
-        awayLogo: m.awayTeam?.crest || '',
-        date: new Date(m.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-        timestamp: new Date(m.utcDate).getTime(),
-        status: m.status,
-        minute: m.minute || (m.status === 'PAUSED' ? 'HT' : (m.status === 'IN_PLAY' ? 'LIVE' : null)),
-        score: {
-          fullTime: {
-            home: m.score?.fullTime?.home ?? null,
-            away: m.score?.fullTime?.away ?? null
-          }
+  ongoingFetchPromise = (async () => {
+    try {
+      const upstreamRes = await fetch(`https://api.football-data.org/v4/competitions/PL/matches?_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: {
+          'X-Auth-Token': API_KEY,
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
         }
       });
-    });
 
-    hasLiveMatchesActive = anyLiveFound;
-
-    // Update active/recent gameweeks in Supabase matches_cache
-    for (const [gwStr, gwMatches] of Object.entries(byGameweek)) {
-      const gwNum = parseInt(gwStr, 10);
-      const cacheId = `${SEASON}_week_${gwNum}`;
-
-      // Check if this gameweek has matches in play or recently updated
-      const hasLiveOrRecent = gwMatches.some(m => 
-        m.status === 'IN_PLAY' || 
-        m.status === 'PAUSED' || 
-        m.status === 'FINISHED' ||
-        m.status === 'TIMED'
-      );
-
-      if (hasLiveOrRecent) {
-        await supabaseRest('matches_cache', 'POST', {
-          id: cacheId,
-          season: SEASON,
-          gameweek: gwNum,
-          matches: gwMatches,
-          last_updated: new Date().toISOString()
-        }).catch(err => console.warn(`[Match Sync] Supabase save note for GW${gwNum}:`, err.message));
+      if (!upstreamRes.ok) {
+        console.warn(`[Upstream API] Returned status ${upstreamRes.status}`);
+        return inMemoryMatchData;
       }
-    }
 
-    console.log(`[Match Sync] Synced ${matches.length} matches across ${Object.keys(byGameweek).length} GWs. Live in-play: ${anyLiveFound}`);
-  } catch (err) {
-    console.error('[Match Sync Worker Error]:', err.message);
+      const data = await upstreamRes.json();
+      if (data && data.matches) {
+        inMemoryMatchData = data;
+        lastUpstreamFetchTime = Date.now();
+        console.log(`[Match Ingestion] Freshly fetched ${data.matches.length} matches from upstream API.`);
+        // Save to Supabase in background
+        saveMatchesToSupabase(data.matches).catch(e => console.warn('[Supabase Sync Note]:', e.message));
+      }
+      return inMemoryMatchData || data;
+    } catch (err) {
+      console.error('[Upstream Fetch Error]:', err.message);
+      return inMemoryMatchData;
+    } finally {
+      ongoingFetchPromise = null;
+    }
+  })();
+
+  return ongoingFetchPromise;
+}
+
+async function saveMatchesToSupabase(matches) {
+  if (!matches || matches.length === 0) return;
+  const byGameweek = {};
+  matches.forEach(m => {
+    const gw = m.matchday;
+    if (!gw) return;
+    if (!byGameweek[gw]) byGameweek[gw] = [];
+    byGameweek[gw].push({
+      id: String(m.id),
+      homeTeam: m.homeTeam?.name || 'Home',
+      awayTeam: m.awayTeam?.name || 'Away',
+      homeLogo: m.homeTeam?.crest || '',
+      awayLogo: m.awayTeam?.crest || '',
+      date: new Date(m.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+      timestamp: new Date(m.utcDate).getTime(),
+      status: m.status,
+      minute: m.minute || (m.status === 'PAUSED' ? 'HT' : (m.status === 'IN_PLAY' ? 'LIVE' : null)),
+      score: {
+        fullTime: {
+          home: m.score?.fullTime?.home ?? null,
+          away: m.score?.fullTime?.away ?? null
+        }
+      }
+    });
+  });
+
+  for (const [gwStr, gwMatches] of Object.entries(byGameweek)) {
+    const gwNum = parseInt(gwStr, 10);
+    const cacheId = `${SEASON}_week_${gwNum}`;
+
+    const hasLiveOrRecent = gwMatches.some(m => 
+      m.status === 'IN_PLAY' || 
+      m.status === 'PAUSED' || 
+      m.status === 'FINISHED' ||
+      m.status === 'TIMED'
+    );
+
+    if (hasLiveOrRecent) {
+      await supabaseRest('matches_cache', 'POST', {
+        id: cacheId,
+        season: SEASON,
+        gameweek: gwNum,
+        matches: gwMatches,
+        last_updated: new Date().toISOString()
+      }).catch(err => console.warn(`[Match Sync] Supabase save note for GW${gwNum}:`, err.message));
+    }
   }
+}
+
+async function syncLiveMatches() {
+  await getOrFetchUpstreamMatches(true);
 }
 
 // --- BACKGROUND WORKER 2: SMART 30-MIN DEADLINE NOTIFIER ---
@@ -326,33 +343,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Football API Proxy with Guaranteed Zero-Cache for Live Scores & VAR Corrections
+  // Football API Proxy with Guaranteed Rate-Limit Protection & Zero Client-Side Stale Caching
   if (pathname.startsWith('/api/football-proxy')) {
-    const targetPath = parsedUrl.searchParams.get('targetPath');
-    if (!targetPath) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Missing targetPath query parameter' }));
-    }
-
-    const queryParams = new URLSearchParams(parsedUrl.searchParams);
-    queryParams.delete('targetPath');
-    queryParams.set('_t', String(Date.now())); // Cache buster
-    const queryString = queryParams.toString();
-    const targetUrl = `https://api.football-data.org/v4/${targetPath}${queryString ? '?' + queryString : ''}`;
-
     try {
-      const upstreamRes = await fetch(targetUrl, {
-        cache: 'no-store',
-        headers: {
-          'X-Auth-Token': API_KEY,
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Pragma': 'no-cache'
-        },
-      });
+      const matchdayParam = parsedUrl.searchParams.get('matchday');
+      const allData = await getOrFetchUpstreamMatches();
 
-      const data = await upstreamRes.json();
-      res.writeHead(upstreamRes.status, {
+      if (!allData || !allData.matches) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Match data temporarily unavailable' }));
+      }
+
+      let filteredMatches = allData.matches;
+      if (matchdayParam) {
+        filteredMatches = allData.matches.filter(m => String(m.matchday) === String(matchdayParam));
+      }
+
+      const responsePayload = {
+        ...allData,
+        matches: filteredMatches
+      };
+
+      res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
         'Pragma': 'no-cache',
@@ -360,10 +372,10 @@ const server = http.createServer(async (req, res) => {
         'Surrogate-Control': 'no-store',
         'Access-Control-Allow-Origin': '*'
       });
-      return res.end(JSON.stringify(data));
+      return res.end(JSON.stringify(responsePayload));
     } catch (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Failed to fetch upstream match data' }));
+      return res.end(JSON.stringify({ error: 'Failed to fetch upstream match data: ' + error.message }));
     }
   }
 
