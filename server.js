@@ -101,6 +101,7 @@ async function supabaseRest(endpoint, method = 'GET', body = null) {
 let inMemoryMatchData = null;
 let lastUpstreamFetchTime = 0;
 let ongoingFetchPromise = null;
+let hasLiveMatchesActive = false;
 const CACHE_TTL_MS = 45 * 1000;
 
 async function getOrFetchUpstreamMatches(force = false) {
