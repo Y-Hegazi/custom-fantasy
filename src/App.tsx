@@ -168,8 +168,14 @@ function App() {
 
         // 2. Fetch fresh live & final scores from API Proxy
         if (needsFreshFetch) {
-          const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${roundToLoad}`;
-          const response = await fetch(proxyUrl);
+          const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${roundToLoad}&_t=${Date.now()}`;
+          const response = await fetch(proxyUrl, {
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache'
+            }
+          });
           const data = await response.json();
 
           if (data?.matches && data.matches.length > 0) {
@@ -232,21 +238,56 @@ function App() {
     };
   }, [currentRound]);
 
-  // LIVE TRIGGER: Crowd-Sourced Cron
-  // Now triggers for whichever gameweek is being VIEWED, not just the "current" one
-  // This ensures past gameweeks get score corrections (e.g., disallowed goals)
+  // 1. Supabase Realtime Listener for Instant Push of Server Score Updates
   useEffect(() => {
-      if (!currentRound) return;
-      
-      // Trigger immediately when viewing any gameweek to get latest scores
-      tryTriggerLiveUpdate(currentRound);
-      
-      const interval = setInterval(() => {
-          tryTriggerLiveUpdate(currentRound);
-      }, 60000);
+    if (!currentRound) return;
+    const targetCacheId = `${SEASON}_week_${currentRound}`;
 
-      return () => clearInterval(interval);
+    const channel = supabase
+      .channel(`public:matches_cache_${targetCacheId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'matches_cache',
+        filter: `id=eq.${targetCacheId}`
+      }, (payload: any) => {
+        if (payload.new?.matches && Array.isArray(payload.new.matches)) {
+          setMatches(payload.new.matches);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentRound]);
+
+  // 2. Active High-Frequency Poller for Live Matches & VAR Reversals
+  useEffect(() => {
+    if (!currentRound) return;
+
+    let isMounted = true;
+    const triggerUpdate = async () => {
+      const fresh = await tryTriggerLiveUpdate(currentRound);
+      if (fresh && isMounted && fresh.length > 0) {
+        setMatches(fresh);
+      }
+    };
+
+    // Immediate initial sync
+    triggerUpdate();
+
+    // 15s polling during live in-play matches; 45s during matchdays
+    const hasLive = matches.some(m => m.status === 'IN_PLAY' || m.status === 'PAUSED');
+    const pollInterval = hasLive ? 15000 : 45000;
+
+    const interval = setInterval(triggerUpdate, pollInterval);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [currentRound, matches.map(m => m.status).join(',')]);
 
   useEffect(() => {
     const checkUserProfile = async (supabaseUser: any) => {
@@ -566,12 +607,30 @@ function App() {
                 />
               </div>
             </div>
-            <div className="text-gray-400 flex items-center gap-1.5 font-medium">
-              {predictedCount === matches.length ? (
-                <span className="text-emerald-400 font-bold flex items-center gap-1">🎉 All picks complete!</span>
-              ) : (
-                <span className="text-gray-400 flex items-center gap-1">Saved automatically ✅</span>
-              )}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={async () => {
+                  showToast('Fetching latest live match scores...', 'info');
+                  const fresh = await tryTriggerLiveUpdate(currentRound);
+                  if (fresh && fresh.length > 0) {
+                    setMatches(fresh);
+                    showToast('✅ Scores and tables up to date!', 'success');
+                  } else {
+                    showToast('Scores are already up to date.', 'info');
+                  }
+                }}
+                className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white border border-gray-700 text-[11px] font-bold transition flex items-center gap-1 shadow-sm active:scale-95"
+                title="Force instant refresh of live scores & VAR corrections"
+              >
+                🔄 Refresh Scores
+              </button>
+              <div className="text-gray-400 flex items-center gap-1.5 font-medium">
+                {predictedCount === matches.length ? (
+                  <span className="text-emerald-400 font-bold flex items-center gap-1">🎉 All picks complete!</span>
+                ) : (
+                  <span className="text-gray-400 flex items-center gap-1">Saved automatically ✅</span>
+                )}
+              </div>
             </div>
           </div>
         )}

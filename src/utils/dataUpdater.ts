@@ -132,9 +132,71 @@ export const processMatchUpdate = async (setStatusCallback: (msg: string) => voi
 };
 
 export const checkForAutoUpdate = async () => {
-    // Automated background worker on server handles live sync every 3m
+    // Automated background worker on server handles live sync
 };
 
-export const tryTriggerLiveUpdate = async (_gameweekId: string | number) => {
-    // Automated background worker on server handles live sync every 3m
+/**
+ * Active client-side live score trigger:
+ * Bypasses all browser/HTTP caches with cache: 'no-store' & timestamp to guarantee fresh scores
+ * for goals, VAR cancellations, cards, and full-time results.
+ */
+export const tryTriggerLiveUpdate = async (gameweekId: string | number): Promise<any[] | null> => {
+    const gwNum = String(gameweekId || "1");
+    try {
+        const proxyUrl = `${API_BASE_URL}?targetPath=competitions/${COMPETITION_CODE}/matches&season=${SEASON}&matchday=${gwNum}&_t=${Date.now()}`;
+        const response = await fetch(proxyUrl, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        });
+
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data?.matches || data.matches.length === 0) return null;
+
+        const formattedMatches = data.matches.map((match: any) => ({
+            id: String(match.id),
+            homeTeam: match.homeTeam?.name || 'Home',
+            awayTeam: match.awayTeam?.name || 'Away',
+            homeLogo: match.homeTeam?.crest || '',
+            awayLogo: match.awayTeam?.crest || '',
+            date: new Date(match.utcDate).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+            timestamp: new Date(match.utcDate).getTime(),
+            status: match.status,
+            minute: match.minute || (match.status === 'PAUSED' ? 'HT' : (match.status === 'IN_PLAY' ? 'LIVE' : null)),
+            odds: generateMatchOdds(match.homeTeam?.name || '', match.awayTeam?.name || '', String(match.id)),
+            score: {
+                fullTime: {
+                    home: match.score?.fullTime?.home ?? null,
+                    away: match.score?.fullTime?.away ?? null
+                }
+            }
+        })).sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+        // Update Supabase cache in background
+        try {
+            await supabase.from('matches_cache').upsert({
+                id: `${SEASON}_week_${gwNum}`,
+                season: SEASON,
+                gameweek: parseInt(gwNum, 10),
+                matches: formattedMatches,
+                last_updated: new Date().toISOString()
+            });
+        } catch {
+            // Non-blocking
+        }
+
+        // If any match is finished, trigger score settlement
+        const hasFinished = formattedMatches.some((m: any) => m.status === 'FINISHED');
+        if (hasFinished) {
+            settleGameweekScores(parseInt(gwNum, 10), SEASON).catch((e) => console.warn('[Auto-Settle Note]:', e.message));
+        }
+
+        return formattedMatches;
+    } catch (err: any) {
+        console.warn('[Live Score Refresh Warning]:', err.message);
+        return null;
+    }
 };

@@ -98,14 +98,18 @@ async function supabaseRest(endpoint, method = 'GET', body = null) {
 }
 
 // --- BACKGROUND WORKER 1: LIVE MATCHDAY SYNC ---
+let hasLiveMatchesActive = false;
+
 async function syncLiveMatches() {
   if (!API_KEY) return;
   try {
-    console.log('[Match Sync] Checking Premier League matches...');
-    const upstreamRes = await fetch('https://api.football-data.org/v4/competitions/PL/matches', {
+    const upstreamRes = await fetch(`https://api.football-data.org/v4/competitions/PL/matches?_t=${Date.now()}`, {
+      cache: 'no-store',
       headers: {
         'X-Auth-Token': API_KEY,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
       }
     });
 
@@ -118,12 +122,19 @@ async function syncLiveMatches() {
     const matches = data.matches || [];
     if (matches.length === 0) return;
 
+    let anyLiveFound = false;
+
     // Group matches by gameweek (matchday)
     const byGameweek = {};
     matches.forEach(m => {
       const gw = m.matchday;
       if (!gw) return;
       if (!byGameweek[gw]) byGameweek[gw] = [];
+
+      if (m.status === 'IN_PLAY' || m.status === 'PAUSED') {
+        anyLiveFound = true;
+      }
+
       byGameweek[gw].push({
         id: String(m.id),
         homeTeam: m.homeTeam?.name || 'Home',
@@ -142,6 +153,8 @@ async function syncLiveMatches() {
         }
       });
     });
+
+    hasLiveMatchesActive = anyLiveFound;
 
     // Update active/recent gameweeks in Supabase matches_cache
     for (const [gwStr, gwMatches] of Object.entries(byGameweek)) {
@@ -167,7 +180,7 @@ async function syncLiveMatches() {
       }
     }
 
-    console.log(`[Match Sync] Processed ${matches.length} matches across ${Object.keys(byGameweek).length} gameweeks.`);
+    console.log(`[Match Sync] Synced ${matches.length} matches across ${Object.keys(byGameweek).length} GWs. Live in-play: ${anyLiveFound}`);
   } catch (err) {
     console.error('[Match Sync Worker Error]:', err.message);
   }
@@ -238,14 +251,23 @@ async function checkKickoffDeadlinesAndNotify() {
   }
 }
 
-// Start background cron timers
-// 1. Match syncing: every 3 minutes
-setInterval(syncLiveMatches, 3 * 60 * 1000);
-// 2. 30-minute deadline push checks: every 3 minutes
-setInterval(checkKickoffDeadlinesAndNotify, 3 * 60 * 1000);
+// Start adaptive background cron timer
+// Checks live scores every 30s during live matches, or every 60s otherwise
+async function matchSyncLoop() {
+  try {
+    await syncLiveMatches();
+  } catch (e) {
+    console.warn('[Sync Loop Warning]:', e.message);
+  }
+  const nextInterval = hasLiveMatchesActive ? 30 * 1000 : 60 * 1000;
+  setTimeout(matchSyncLoop, nextInterval);
+}
+
+// Start 30-minute deadline push checks every 2 minutes
+setInterval(checkKickoffDeadlinesAndNotify, 2 * 60 * 1000);
 
 // Run initial sync after server startup
-setTimeout(syncLiveMatches, 5000);
+setTimeout(matchSyncLoop, 2000);
 
 // --- HTTP SERVER ---
 const server = http.createServer(async (req, res) => {
@@ -304,7 +326,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Football API Proxy
+  // Football API Proxy with Guaranteed Zero-Cache for Live Scores & VAR Corrections
   if (pathname.startsWith('/api/football-proxy')) {
     const targetPath = parsedUrl.searchParams.get('targetPath');
     if (!targetPath) {
@@ -314,21 +336,28 @@ const server = http.createServer(async (req, res) => {
 
     const queryParams = new URLSearchParams(parsedUrl.searchParams);
     queryParams.delete('targetPath');
+    queryParams.set('_t', String(Date.now())); // Cache buster
     const queryString = queryParams.toString();
     const targetUrl = `https://api.football-data.org/v4/${targetPath}${queryString ? '?' + queryString : ''}`;
 
     try {
       const upstreamRes = await fetch(targetUrl, {
+        cache: 'no-store',
         headers: {
           'X-Auth-Token': API_KEY,
           'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
         },
       });
 
       const data = await upstreamRes.json();
       res.writeHead(upstreamRes.status, {
         'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Surrogate-Control': 'no-store',
         'Access-Control-Allow-Origin': '*'
       });
       return res.end(JSON.stringify(data));
