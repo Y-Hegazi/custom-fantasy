@@ -61,7 +61,11 @@ function App() {
       showToast('⏰ 3-Hour Alarm active! You will be alerted via web push & email 3 hours before kickoff if your prediction is missing.', 'success');
     } else {
       setPushStatus('denied');
-      showToast('Push permission denied or not supported on this browser.', 'error');
+      if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+        showToast('⚠️ Notifications are blocked in your browser! Click the settings/padlock icon in your URL bar next to the domain and change Notifications to "Allow".', 'error');
+      } else {
+        showToast('Push notifications permission was dismissed or not granted.', 'error');
+      }
     }
   };
 
