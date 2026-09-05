@@ -51,14 +51,14 @@ function App() {
 
   const handleEnablePush = async () => {
     if (!user) {
-      showToast('Please sign in first to enable push alerts.', 'error');
+      showToast('Please sign in first to enable kickoff alarms.', 'error');
       return;
     }
     setPushStatus('loading');
     const success = await subscribeUserToPush(user.id || user.uid);
     if (success) {
       setPushStatus('subscribed');
-      showToast('🔔 Push alerts activated! We will notify you 30m before kickoff if you forget picks.', 'success');
+      showToast('⏰ 3-Hour Alarm active! You will be alerted via web push & email 3 hours before kickoff if your prediction is missing.', 'success');
     } else {
       setPushStatus('denied');
       showToast('Push permission denied or not supported on this browser.', 'error');
@@ -657,9 +657,57 @@ function App() {
             </button>
           </div>
         ) : (
-          <div className="matches-container">
-            {matches.map((match) => {
-              const matchDeadline = match.timestamp - LOCKOUT_BUFFER_MS;
+          <>
+            {/* ⏰ 3-HOUR IN-APP KICKOFF ALARM (Triggers ONLY when match <= 3h away and user hasn't predicted yet) */}
+            {(() => {
+              const unpredicted3hMatch = matches.find(m => {
+                if (m.status === 'FINISHED' || m.status === 'IN_PLAY' || m.status === 'PAUSED') return false;
+                const timeUntil = m.timestamp - nowTime;
+                const isWithin3Hours = timeUntil > 0 && timeUntil <= (3 * 60 * 60 * 1000);
+                const pred = predictions[m.id];
+                const hasPredicted = pred && pred.home !== '' && pred.away !== '' && pred.home !== null && pred.away !== null;
+                return isWithin3Hours && !hasPredicted;
+              });
+
+              if (!unpredicted3hMatch) return null;
+
+              const minsLeft = Math.max(1, Math.round((unpredicted3hMatch.timestamp - nowTime) / (60 * 1000)));
+              const hours = Math.floor(minsLeft / 60);
+              const mins = minsLeft % 60;
+              const timeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+
+              return (
+                <div className="w-full mb-5 p-4 rounded-2xl bg-gradient-to-r from-red-950/90 via-amber-950/80 to-red-950/90 border-2 border-red-500/80 shadow-2xl flex flex-wrap items-center justify-between gap-3 text-white">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl animate-bounce">⏰</span>
+                    <div>
+                      <div className="font-black text-amber-300 text-sm tracking-wide flex items-center gap-2">
+                        <span>3-HOUR KICKOFF ALARM: {unpredicted3hMatch.homeTeam} vs {unpredicted3hMatch.awayTeam}</span>
+                        <span className="bg-red-600 text-white text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider animate-pulse">
+                          Kickoff in {timeStr}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-300 mt-0.5">
+                        ⚠️ You haven't submitted a prediction for this match yet! Lock in your picks now before lockout.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const el = document.getElementById(`match-card-${unpredicted3hMatch.id}`);
+                      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }}
+                    className="px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-gray-950 font-black text-xs rounded-lg transition shadow-md active:scale-95 flex items-center gap-1.5"
+                  >
+                    <span>⚡ Predict Now</span>
+                  </button>
+                </div>
+              );
+            })()}
+
+            <div className="matches-container">
+              {matches.map((match) => {
+                const matchDeadline = match.timestamp - LOCKOUT_BUFFER_MS;
               const isLocked = nowTime > matchDeadline;
               const isLive = match.status === 'IN_PLAY' || match.status === 'PAUSED';
               const isFinished = match.status === 'FINISHED';
@@ -752,6 +800,7 @@ function App() {
                 return (
                 <div 
                   key={match.id} 
+                  id={`match-card-${match.id}`}
                   className={`match-card ${isLocked ? 'locked' : ''} ${isLive ? 'live-view' : ''}`}
                   style={gradientStyle}
                 >
@@ -878,6 +927,7 @@ function App() {
               );
             })}
           </div>
+          </>
         )}
       </>
     );
@@ -997,19 +1047,19 @@ function App() {
             <span>Share Card</span>
           </button>
 
-          {/* 30-Min Kickoff Alert Push Button */}
+          {/* 3-Hour Kickoff Alarm Web Push & Email Button */}
           <button
             onClick={handleEnablePush}
             disabled={pushStatus === 'subscribed'}
             className={`flex items-center gap-1.5 px-3.5 py-2 font-bold text-xs rounded-lg transition shadow ${
               pushStatus === 'subscribed'
                 ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 cursor-default'
-                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white animate-pulse'
             }`}
-            title="Notify 30 mins before kickoff if you haven't made predictions"
+            title="Alarm from Web & Email 3 hours before kickoff if you haven't predicted yet"
           >
-            <span>🔔</span>
-            <span>{pushStatus === 'subscribed' ? 'Alerts ON' : '30m Alerts'}</span>
+            <span>⏰</span>
+            <span>{pushStatus === 'subscribed' ? '3h Alarm Active ✅' : '🔔 3h Kickoff Alarm'}</span>
           </button>
 
           <button 

@@ -46,13 +46,52 @@ function Admin() {
   const [finalizeGW, setFinalizeGW] = useState('1');
   const [gwInspectData, setGwInspectData] = useState<any | null>(null);
 
+  // 6. 3-Hour Alarm Diagnostics State
+  const [alertStatus, setAlertStatus] = useState<any | null>(null);
+
   // Initial Load
   useEffect(() => {
     loadAnnouncement();
     loadUsers();
     loadLeagues();
     checkTelemetry();
+    fetchAlertStatus();
   }, []);
+
+  const fetchAlertStatus = async () => {
+    try {
+      const res = await fetch('/api/alerts/status');
+      if (res.ok) {
+        const data = await res.json();
+        setAlertStatus(data);
+      }
+    } catch {
+      // non-blocking
+    }
+  };
+
+  const handleTestAlert = async () => {
+    setIsLoading(true);
+    setStatus('Sending test 3-hour alarm across Web Push and Email...');
+    try {
+      const res = await fetch('/api/alerts/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStatus(`✅ Test 3h Alarm Dispatched! Web Push: ${data.webPushDelivered === true ? 'Delivered' : String(data.webPushDelivered)}, Email: ${data.emailDelivered === true ? 'Delivered to ' + data.targetEmail : 'Provider: ' + data.emailProvider}`);
+      } else {
+        setStatus(`❌ Test Alarm Error: ${data.error}`);
+      }
+      fetchAlertStatus();
+    } catch (err: any) {
+      setStatus(`❌ Test Alarm Failed: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const checkTelemetry = async () => {
     setSupabaseReady(isSupabaseConfigured());
@@ -574,6 +613,59 @@ function Admin() {
             >
               {isLoading ? 'Saving...' : 'Publish Announcement'}
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* --- ⏰ 3-HOUR KICKOFF ALARM & NOTIFICATION SYSTEM --- */}
+      <div className="mb-8 p-5 bg-[#1f2937] rounded-xl border border-indigo-700/60 shadow-md">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+          <div>
+            <h3 className="text-lg font-bold text-indigo-300 flex items-center gap-2">
+              ⏰ 3-Hour Kickoff Alarm (Web Push & Email)
+            </h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Automatically reminds managers <strong>3 hours before kickoff</strong> via Web Push and Email, <strong>strictly if their prediction is still missing</strong>.
+            </p>
+          </div>
+          <button
+            onClick={handleTestAlert}
+            disabled={isLoading}
+            className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold text-xs rounded-lg transition shadow flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+          >
+            <span>🧪</span>
+            <span>Send Test 3h Alarm Now</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs bg-gray-900/90 p-3.5 rounded-lg border border-gray-800 mt-3">
+          <div>
+            <div className="text-gray-400 font-semibold">Web Push Delivery:</div>
+            <div className="font-bold text-emerald-400 mt-1">
+              {alertStatus?.vapidReady ? '🟢 VAPID Active' : '⚪ Standby'} ({alertStatus?.pushSubscribers ?? 0} browser devices registered)
+            </div>
+          </div>
+          <div>
+            <div className="text-gray-400 font-semibold">Email Delivery Provider:</div>
+            <div className="font-bold text-blue-400 mt-1">
+              {alertStatus?.emailProvider || 'Resend / SMTP'}
+            </div>
+          </div>
+          <div>
+            <div className="text-gray-400 font-semibold">Alarm Trigger Rule:</div>
+            <div className="font-bold text-amber-400 mt-1">
+              Match ≤ 3 Hours & Pick Missing
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 p-3 rounded-lg bg-indigo-950/30 border border-indigo-900/50 text-[11px] text-indigo-200/90 space-y-1">
+          <div className="font-semibold text-indigo-300">💡 How to enable live email delivery:</div>
+          <div>
+            • <strong>Option A (Recommended)</strong>: Add a free Resend API key on Fly: <code className="bg-black/40 px-1 py-0.5 rounded text-indigo-200">flyctl secrets set RESEND_API_KEY=re_xxxx</code>
+          </div>
+          <div>
+            • <strong>Option B (Gmail / SMTP)</strong>: Add your SMTP credentials: <code className="bg-black/40 px-1 py-0.5 rounded text-indigo-200">flyctl secrets set SMTP_HOST=smtp.gmail.com SMTP_PORT=465 SMTP_USER=your@gmail.com SMTP_PASS=app_password</code>
           </div>
         </div>
       </div>
